@@ -6,9 +6,84 @@ import (
 	"regexp"
 	"strings"
 
-	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 	"google.golang.org/protobuf/types/known/structpb"
+
+	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 )
+
+type Tuple openfgav1.TupleKey
+
+func (t *Tuple) GetObject() string {
+	return (*openfgav1.TupleKey)(t).GetObject()
+}
+
+func (t *Tuple) GetRelation() string {
+	return (*openfgav1.TupleKey)(t).GetRelation()
+}
+
+func (t *Tuple) GetUser() string {
+	return (*openfgav1.TupleKey)(t).GetUser()
+}
+
+func (t *Tuple) String() string {
+	tk := (*openfgav1.TupleKey)(t)
+
+	return tk.GetObject() +
+		"#" +
+		tk.GetRelation() +
+		"@" +
+		tk.GetUser()
+}
+
+func From(tk *openfgav1.TupleKey) *Tuple {
+	return (*Tuple)(tk)
+}
+
+type TupleKeys []*openfgav1.TupleKey
+
+// Len is a method that is required to implement the
+// sort.Interface interface. Len returns the number
+// of elements in the slice.
+func (tk TupleKeys) Len() int {
+	return len(tk)
+}
+
+// Less is a method that is required to implement the
+// sort.Interface interface. Less returns true when the
+// value at index i is less than the value at index j.
+// Tuples are compared first by their object, then their
+// relation, then their user, and finally their condition.
+// If Less(i, j) returns false and Less(j, i) returns false,
+// then the tuples are equal.
+func (tk TupleKeys) Less(i, j int) bool {
+	if tk[i].GetObject() != tk[j].GetObject() {
+		return tk[i].GetObject() < tk[j].GetObject()
+	}
+
+	if tk[i].GetRelation() != tk[j].GetRelation() {
+		return tk[i].GetRelation() < tk[j].GetRelation()
+	}
+
+	if tk[i].GetUser() != tk[j].GetUser() {
+		return tk[i].GetUser() < tk[j].GetUser()
+	}
+
+	cond1 := tk[i].GetCondition()
+	cond2 := tk[j].GetCondition()
+	if (cond1 != nil || cond2 != nil) && cond1.GetName() != cond2.GetName() {
+		return cond1.GetName() < cond2.GetName()
+	}
+	// Note: conditions also optionally have context structs, but we aren't sorting by context
+
+	return true
+}
+
+// Swap is a method that is required to implement the
+// sort.Interface interface. Swap exchanges the values
+// at slice indexes i and j.
+func (tk TupleKeys) Swap(i, j int) {
+	tk[i], tk[j] = tk[j], tk[i]
+}
 
 type TupleWithCondition interface {
 	TupleWithoutCondition
@@ -25,16 +100,15 @@ type TupleWithoutCondition interface {
 type UserType string
 
 const (
-	User    UserType = "user"
-	UserSet UserType = "userset"
+	User     UserType = "user"
+	UserSet  UserType = "userset"
+	Wildcard          = "*"
 )
-
-const Wildcard = "*"
 
 var (
 	userIDRegex   = regexp.MustCompile(`^[^:#\s]+$`)
 	objectRegex   = regexp.MustCompile(`^[^:#\s]+:[^#:\s]+$`)
-	userSetRegex  = regexp.MustCompile(`^[^:#\s]+:[^#\s]+#[^:#\s]+$`)
+	userSetRegex  = regexp.MustCompile(`^[^:#\s]+:[^#:*\s]+#[^:#*\s]+$`)
 	relationRegex = regexp.MustCompile(`^[^:#@\s]+$`)
 )
 
@@ -151,11 +225,58 @@ func NewExpandRequestTupleKey(object, relation string) *openfgav1.ExpandRequestT
 // ObjectKey returns the canonical key for the provided Object. The ObjectKey of an object
 // is the string 'objectType:objectId'.
 func ObjectKey(obj *openfgav1.Object) string {
-	return fmt.Sprintf("%s:%s", obj.Type, obj.Id)
+	return BuildObject(obj.GetType(), obj.GetId())
 }
 
-// SplitObject splits an object into an objectType and an objectID. If no type is present, it returns the empty string
-// and the original object.
+type UserString = string
+
+// UserProtoToString returns a string from a User proto. Ex: 'user:maria' or 'group:fga#member'. It is
+// the opposite of StringToUserProto function.
+func UserProtoToString(obj *openfgav1.User) UserString {
+	switch obj.GetUser().(type) {
+	case *openfgav1.User_Wildcard:
+		return fmt.Sprintf("%s:*", obj.GetWildcard().GetType())
+	case *openfgav1.User_Userset:
+		us := obj.GetUser().(*openfgav1.User_Userset)
+		return fmt.Sprintf("%s:%s#%s", us.Userset.GetType(), us.Userset.GetId(), us.Userset.GetRelation())
+	case *openfgav1.User_Object:
+		us := obj.GetUser().(*openfgav1.User_Object)
+		return fmt.Sprintf("%s:%s", us.Object.GetType(), us.Object.GetId())
+	default:
+		panic("unsupported type")
+	}
+}
+
+// StringToUserProto returns a User proto from a string. Ex: 'user:maria#member'.
+// It is the opposite of UserProtoToString function.
+func StringToUserProto(userKey UserString) *openfgav1.User {
+	userObj, userRel := SplitObjectRelation(userKey)
+	userObjType, userObjID := SplitObject(userObj)
+	if userRel == "" && userObjID == "*" {
+		return &openfgav1.User{User: &openfgav1.User_Wildcard{
+			Wildcard: &openfgav1.TypedWildcard{
+				Type: userObjType,
+			},
+		}}
+	}
+	if userRel == "" {
+		return &openfgav1.User{User: &openfgav1.User_Object{Object: &openfgav1.Object{
+			Type: userObjType,
+			Id:   userObjID,
+		}}}
+	}
+	return &openfgav1.User{User: &openfgav1.User_Userset{Userset: &openfgav1.UsersetUser{
+		Type:     userObjType,
+		Id:       userObjID,
+		Relation: userRel,
+	}}}
+}
+
+// SplitObject splits an object into an objectType, an optional objectRelation, and an objectID.
+// E.g.
+//  1. "group:fga" returns "group" and "fga".
+//  2. "group#member:fga" returns "group#member" and "fga".
+//  3. "anne" returns "" and "anne".
 func SplitObject(object string) (string, string) {
 	switch i := strings.IndexByte(object, ':'); i {
 	case -1:
@@ -171,7 +292,7 @@ func BuildObject(objectType, objectID string) string {
 	return fmt.Sprintf("%s:%s", objectType, objectID)
 }
 
-// GetObjectRelationAsString returns a string like "object#relation". If there is no relation it returns "object"
+// GetObjectRelationAsString returns a string like "object#relation". If there is no relation it returns "object".
 func GetObjectRelationAsString(objectRelation *openfgav1.ObjectRelation) string {
 	if objectRelation.GetRelation() != "" {
 		return fmt.Sprintf("%s#%s", objectRelation.GetObject(), objectRelation.GetRelation())
@@ -226,15 +347,20 @@ func GetUserTypeFromUser(user string) UserType {
 }
 
 // TupleKeyToString converts a tuple key into its string representation. It assumes the tupleKey is valid
-// (i.e. no forbidden characters)
+// (i.e. no forbidden characters).
 func TupleKeyToString(tk TupleWithoutCondition) string {
 	return fmt.Sprintf("%s#%s@%s", tk.GetObject(), tk.GetRelation(), tk.GetUser())
 }
 
 // TupleKeyWithConditionToString converts a tuple key with condition into its string representation. It assumes the tupleKey is valid
-// (i.e. no forbidden characters)
+// (i.e. no forbidden characters).
 func TupleKeyWithConditionToString(tk TupleWithCondition) string {
-	return fmt.Sprintf("%s#%s@%s (condition %s)", tk.GetObject(), tk.GetRelation(), tk.GetUser(), tk.GetCondition())
+	var sb strings.Builder
+	sb.WriteString(TupleKeyToString(tk))
+	if tk.GetCondition() != nil {
+		sb.WriteString(fmt.Sprintf(" (condition %s)", tk.GetCondition().GetName()))
+	}
+	return sb.String()
 }
 
 // IsValidObject determines if a string s is a valid object. A valid object contains exactly one `:` and no `#` or spaces.
@@ -249,17 +375,14 @@ func IsValidRelation(s string) bool {
 
 // IsValidUser determines if a string is a valid user. A valid user contains at most one `:`, at most one `#` and no spaces.
 func IsValidUser(user string) bool {
-	if strings.Count(user, ":") > 1 || strings.Count(user, "#") > 1 {
-		return false
-	}
-	if user == "*" || userIDRegex.MatchString(user) || objectRegex.MatchString(user) || userSetRegex.MatchString(user) {
+	if user == Wildcard || userIDRegex.MatchString(user) || objectRegex.MatchString(user) || userSetRegex.MatchString(user) {
 		return true
 	}
 
 	return false
 }
 
-// IsWildcard returns true if the string 's' could be interpreted as a typed or untyped wildcard (e.g. '*' or 'type:*')
+// IsWildcard returns true if the string 's' could be interpreted as a typed or untyped wildcard (e.g. '*' or 'type:*').
 func IsWildcard(s string) bool {
 	return s == Wildcard || IsTypedWildcard(s)
 }
@@ -267,12 +390,109 @@ func IsWildcard(s string) bool {
 // IsTypedWildcard returns true if the string 's' is a typed wildcard. A typed wildcard
 // has the form 'type:*'.
 func IsTypedWildcard(s string) bool {
-	if IsValidObject(s) {
-		_, id := SplitObject(s)
-		if id == Wildcard {
-			return true
-		}
+	t, id := SplitObject(s)
+	return t != "" && id == Wildcard
+}
+
+// TypedPublicWildcard returns the string tuple representation for a given object type (ex: "user:*").
+func TypedPublicWildcard(objectType string) string {
+	return BuildObject(objectType, Wildcard)
+}
+
+// MustParseTupleString attempts to parse a relationship tuple specified
+// in string notation and return the protobuf TupleKey for it. If parsing
+// of the string fails this  function will panic. It is meant for testing
+// purposes.
+//
+// Given string 'document:1#viewer@user:jon', return the protobuf TupleKey
+// for it.
+func MustParseTupleString(s string) *openfgav1.TupleKey {
+	t, err := ParseTupleString(s)
+	if err != nil {
+		panic(err)
 	}
 
-	return false
+	return t
+}
+
+func MustParseTupleStrings(tupleStrs ...string) []*openfgav1.TupleKey {
+	tuples := make([]*openfgav1.TupleKey, 0, len(tupleStrs))
+	for _, tupleStr := range tupleStrs {
+		tuples = append(tuples, MustParseTupleString(tupleStr))
+	}
+
+	return tuples
+}
+
+// ParseTupleString attempts to parse a relationship tuple specified
+// in string notation and return the protobuf TupleKey for it. If parsing
+// of the string fails this  function returns an err.
+//
+// Given string 'document:1#viewer@user:jon', return the protobuf TupleKey
+// for it or an error.
+func ParseTupleString(s string) (*openfgav1.TupleKey, error) {
+	object, rhs, found := strings.Cut(s, "#")
+	if !found {
+		return nil, fmt.Errorf("expected at least one '#' separating the object and relation")
+	}
+
+	if !IsValidObject(object) {
+		return nil, fmt.Errorf("invalid tuple 'object' field format")
+	}
+
+	relation, user, found := strings.Cut(rhs, "@")
+	if !found {
+		return nil, fmt.Errorf("expected at least one '@' separating the relation and user")
+	}
+
+	if !IsValidRelation(relation) {
+		return nil, fmt.Errorf("invalid tuple 'relation' field format")
+	}
+
+	if !IsValidUser(user) {
+		return nil, fmt.Errorf("invalid tuple 'user' field format")
+	}
+
+	return &openfgav1.TupleKey{
+		Object:   object,
+		Relation: relation,
+		User:     user,
+	}, nil
+}
+
+func ToUserPartsFromObjectRelation(u *openfgav1.ObjectRelation) (string, string, string) {
+	userObjectType, userObjectID := SplitObject(u.GetObject())
+	return userObjectType, userObjectID, u.GetRelation()
+}
+
+func ToUserParts(user string) (string, string, string) {
+	userObject, userRelation := SplitObjectRelation(user) // e.g. (person:bob, "") or (group:abc, member) or (person:*, "")
+
+	userObjectType, userObjectID := SplitObject(userObject)
+
+	return userObjectType, userObjectID, userRelation
+}
+
+func FromUserParts(userObjectType, userObjectID, userRelation string) string {
+	user := userObjectID
+	if userObjectType != "" {
+		user = fmt.Sprintf("%s:%s", userObjectType, userObjectID)
+	}
+	if userRelation != "" {
+		user = fmt.Sprintf("%s#%s", user, userRelation)
+	}
+	return user
+}
+
+// IsSelfDefining returns true if the tuple is reflexive/self-defining. E.g. Document:1#viewer@document:1#viewer.
+// See https://github.com/openfga/rfcs/blob/main/20240328-queries-with-usersets.md
+func IsSelfDefining(tuple *openfgav1.TupleKey) bool {
+	userObject, userRelation := SplitObjectRelation(tuple.GetUser())
+	return tuple.GetRelation() == userRelation && tuple.GetObject() == userObject
+}
+
+// UsersetMatchTypeAndRelation returns true if the type and relation of a userset match the inputs.
+func UsersetMatchTypeAndRelation(userset, relation, typee string) bool {
+	userObjectType, _, userRelation := ToUserParts(userset)
+	return relation == userRelation && typee == userObjectType
 }

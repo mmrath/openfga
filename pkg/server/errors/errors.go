@@ -2,12 +2,14 @@
 package errors
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
-	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 
 	"github.com/openfga/openfga/pkg/storage"
 	"github.com/openfga/openfga/pkg/tuple"
@@ -16,15 +18,18 @@ import (
 const InternalServerErrorMsg = "Internal Server Error"
 
 var (
-	// AuthorizationModelResolutionTooComplex is used to avoid stack overflows
-	AuthorizationModelResolutionTooComplex = status.Error(codes.Code(openfgav1.ErrorCode_authorization_model_resolution_too_complex), "Authorization Model resolution required too many rewrite rules to be resolved. Check your authorization model for infinite recursion or too much nesting")
-	InvalidWriteInput                      = status.Error(codes.Code(openfgav1.ErrorCode_invalid_write_input), "Invalid input. Make sure you provide at least one write, or at least one delete")
-	InvalidContinuationToken               = status.Error(codes.Code(openfgav1.ErrorCode_invalid_continuation_token), "Invalid continuation token")
-	InvalidExpandInput                     = status.Error(codes.Code(openfgav1.ErrorCode_invalid_expand_input), "Invalid input. Make sure you provide an object and a relation")
-	UnsupportedUserSet                     = status.Error(codes.Code(openfgav1.ErrorCode_unsupported_user_set), "Userset is not supported (right now)")
-	StoreIDNotFound                        = status.Error(codes.Code(openfgav1.NotFoundErrorCode_store_id_not_found), "Store ID not found")
-	MismatchObjectType                     = status.Error(codes.Code(openfgav1.ErrorCode_query_string_type_continuation_token_mismatch), "The type in the querystring and the continuation token don't match")
-	RequestCancelled                       = status.Error(codes.Code(openfgav1.InternalErrorCode_cancelled), "Request Cancelled")
+	// ErrAuthorizationModelResolutionTooComplex is used to avoid stack overflows.
+	ErrAuthorizationModelResolutionTooComplex = status.Error(codes.Code(openfgav1.ErrorCode_authorization_model_resolution_too_complex), "Authorization Model resolution required too many rewrite rules to be resolved. Check your authorization model for infinite recursion or too much nesting")
+	ErrInvalidWriteInput                      = status.Error(codes.Code(openfgav1.ErrorCode_invalid_write_input), "Invalid input. Make sure you provide at least one write, or at least one delete")
+	ErrInvalidContinuationToken               = status.Error(codes.Code(openfgav1.ErrorCode_invalid_continuation_token), "Invalid continuation token")
+	ErrInvalidStartTime                       = status.Error(codes.Code(openfgav1.ErrorCode_invalid_start_time), "Invalid start time")
+	ErrInvalidExpandInput                     = status.Error(codes.Code(openfgav1.ErrorCode_invalid_expand_input), "Invalid input. Make sure you provide an object and a relation")
+	ErrUnsupportedUserSet                     = status.Error(codes.Code(openfgav1.ErrorCode_unsupported_user_set), "Userset is not supported (right now)")
+	ErrStoreIDNotFound                        = status.Error(codes.Code(openfgav1.NotFoundErrorCode_store_id_not_found), "Store ID not found")
+	ErrMismatchObjectType                     = status.Error(codes.Code(openfgav1.ErrorCode_query_string_type_continuation_token_mismatch), "The type in the querystring and the continuation token don't match")
+	ErrRequestCancelled                       = status.Error(codes.Code(openfgav1.ErrorCode_cancelled), "Request Cancelled")
+	ErrRequestDeadlineExceeded                = status.Error(codes.Code(openfgav1.InternalErrorCode_deadline_exceeded), "Request Deadline Exceeded")
+	ErrThrottledTimeout                       = status.Error(codes.Code(openfgav1.UnprocessableContentErrorCode_throttled_timeout_error), "timeout due to throttling on complex request")
 )
 
 type InternalError struct {
@@ -33,21 +38,25 @@ type InternalError struct {
 }
 
 func (e InternalError) Error() string {
+	// hide the internal error in the message
 	return e.public.Error()
 }
 
-func (e InternalError) Is(target error) bool {
-	return target.Error() == e.Error()
-}
-
-func (e InternalError) InternalError() string {
-	return e.internal.Error()
-}
-
-func (e InternalError) Internal() error {
+// Unwrap is called by errors.Is. It returns the underlying issue.
+func (e InternalError) Unwrap() error {
 	return e.internal
 }
 
+func (e InternalError) GRPCStatus() *status.Status {
+	st, ok := status.FromError(e.public)
+	if ok {
+		return st
+	}
+	return status.New(codes.Unknown, e.public.Error())
+}
+
+// NewInternalError returns an error that is decorated with a public-facing error message.
+// It is only meant to be called by HandleError.
 func NewInternalError(public string, internal error) InternalError {
 	if public == "" {
 		public = InternalServerErrorMsg
@@ -98,30 +107,32 @@ func DuplicateTupleInWrite(tk tuple.TupleWithoutCondition) error {
 }
 
 func WriteFailedDueToInvalidInput(err error) error {
-	if err != nil {
-		return status.Error(codes.Code(openfgav1.ErrorCode_write_failed_due_to_invalid_input), err.Error())
-	}
-	return status.Error(codes.Code(openfgav1.ErrorCode_write_failed_due_to_invalid_input), "Write failed due to invalid input")
+	return status.Error(codes.Code(openfgav1.ErrorCode_write_failed_due_to_invalid_input), err.Error())
 }
 
 func InvalidAuthorizationModelInput(err error) error {
 	return status.Error(codes.Code(openfgav1.ErrorCode_invalid_authorization_model), err.Error())
 }
 
-// HandleError is used to hide internal errors from users. Use `public` to return an error message to the user.
+// HandleError is used to surface some errors, and hide others.
+// Use `public` if you want to return a useful error message to the user.
 func HandleError(public string, err error) error {
-	if errors.Is(err, storage.ErrInvalidContinuationToken) {
-		return InvalidContinuationToken
-	} else if errors.Is(err, storage.ErrMismatchObjectType) {
-		return MismatchObjectType
-	} else if errors.Is(err, storage.ErrCancelled) {
-		return RequestCancelled
+	switch {
+	case errors.Is(err, storage.ErrInvalidContinuationToken):
+		return ErrInvalidContinuationToken
+	case errors.Is(err, storage.ErrInvalidStartTime):
+		return ErrInvalidStartTime
+	case errors.Is(err, context.Canceled):
+		// cancel by a client is not an "internal server error"
+		return ErrRequestCancelled
+	case errors.Is(err, context.DeadlineExceeded):
+		return ErrRequestDeadlineExceeded
+	default:
+		return NewInternalError(public, err)
 	}
-
-	return NewInternalError(public, err)
 }
 
-// HandleTupleValidateError provide common routines for handling tuples validation error
+// HandleTupleValidateError provide common routines for handling tuples validation error.
 func HandleTupleValidateError(err error) error {
 	switch t := err.(type) {
 	case *tuple.InvalidTupleError:
@@ -133,6 +144,11 @@ func HandleTupleValidateError(err error) error {
 		return TypeNotFound(t.TypeName)
 	case *tuple.RelationNotFoundError:
 		return RelationNotFound(t.Relation, t.TypeName, t.TupleKey)
+	case *tuple.InvalidConditionalTupleError:
+		return status.Error(
+			codes.Code(openfgav1.ErrorCode_validation_error),
+			err.Error(),
+		)
 	}
 
 	return HandleError("", err)

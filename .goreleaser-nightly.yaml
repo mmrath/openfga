@@ -1,9 +1,10 @@
+version: 2
+
 project_name: openfga-nightly
 
 before:
   hooks:
-    - make install-tools
-    - go generate ./...
+    - make generate-mocks
 
 builds:
   - main: ./cmd/openfga
@@ -64,13 +65,7 @@ docker_manifests:
       - openfga/openfga:nightly-arm64
 
 archives:
-  - replacements:
-      darwin: Darwin
-      linux: Linux
-      windows: Windows
-      386: i386
-      amd64: x86_64
-    files:
+  - files:
       - assets
 
 checksum:

@@ -7,9 +7,10 @@ import (
 	"testing"
 	"time"
 
-	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/structpb"
+
+	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 
 	"github.com/openfga/openfga/internal/condition"
 	"github.com/openfga/openfga/internal/condition/types"
@@ -198,6 +199,50 @@ func TestEvaluate(t *testing.T) {
 			result: condition.EvaluationResult{
 				ConditionMet:      false,
 				MissingParameters: []string{"param1"},
+			},
+		},
+		{
+			name: "mix_of_missing_params_and_truthy_eval",
+			condition: &openfgav1.Condition{
+				Name:       "condition1",
+				Expression: "param1 == 'ok' || param2 == 'ok'",
+				Parameters: map[string]*openfgav1.ConditionParamTypeRef{
+					"param1": {
+						TypeName: openfgav1.ConditionParamTypeRef_TYPE_NAME_STRING,
+					},
+					"param2": {
+						TypeName: openfgav1.ConditionParamTypeRef_TYPE_NAME_STRING,
+					},
+				},
+			},
+			context: map[string]interface{}{
+				"param1": "ok",
+			},
+			result: condition.EvaluationResult{
+				ConditionMet:      true,
+				MissingParameters: []string{"param2"},
+			},
+		},
+		{
+			name: "mix_of_missing_params_and_falsey_eval",
+			condition: &openfgav1.Condition{
+				Name:       "condition1",
+				Expression: "param1 == 'ok' && param2 == 'ok'",
+				Parameters: map[string]*openfgav1.ConditionParamTypeRef{
+					"param1": {
+						TypeName: openfgav1.ConditionParamTypeRef_TYPE_NAME_STRING,
+					},
+					"param2": {
+						TypeName: openfgav1.ConditionParamTypeRef_TYPE_NAME_STRING,
+					},
+				},
+			},
+			context: map[string]interface{}{
+				"param1": "ok",
+			},
+			result: condition.EvaluationResult{
+				ConditionMet:      false,
+				MissingParameters: []string{"param2"},
 			},
 		},
 		{
@@ -513,6 +558,11 @@ func TestEvaluateWithInterruptCheckFrequency(t *testing.T) {
 		return items
 	}
 
+	// numLoops is the number of loops being evaluated by a CEL
+	// expression. This number needs to be large enough to not
+	// be resolved before the 1 microsecond context timeout.
+	numLoops := 500
+
 	var tests = []struct {
 		name           string
 		condition      *openfgav1.Condition
@@ -537,9 +587,12 @@ func TestEvaluateWithInterruptCheckFrequency(t *testing.T) {
 					},
 				},
 			},
-			checkFrequency: 100,
+			checkFrequency: uint(numLoops),
 			context: map[string]interface{}{
-				"items": makeItems(100),
+				"items": makeItems(numLoops),
+			},
+			result: condition.EvaluationResult{
+				ConditionMet: false,
 			},
 			err: fmt.Errorf("failed to evaluate relationship condition: 'condition1' - failed to evaluate condition expression: operation interrupted"),
 		},
@@ -559,13 +612,14 @@ func TestEvaluateWithInterruptCheckFrequency(t *testing.T) {
 					},
 				},
 			},
-			checkFrequency: 100,
+			checkFrequency: uint(numLoops),
 			context: map[string]interface{}{
-				"items": makeItems(99),
+				"items": makeItems(numLoops - 1),
 			},
 			result: condition.EvaluationResult{
 				ConditionMet: true,
 			},
+			err: nil,
 		},
 		{
 			name: "operation_interrupted_two_comprehensions",
@@ -583,9 +637,12 @@ func TestEvaluateWithInterruptCheckFrequency(t *testing.T) {
 					},
 				},
 			},
-			checkFrequency: 100,
+			checkFrequency: uint(numLoops),
 			context: map[string]interface{}{
-				"items": makeItems(100),
+				"items": makeItems(numLoops),
+			},
+			result: condition.EvaluationResult{
+				ConditionMet: false,
 			},
 			err: fmt.Errorf("failed to evaluate relationship condition: 'condition1' - failed to evaluate condition expression: operation interrupted"),
 		},
@@ -605,9 +662,12 @@ func TestEvaluateWithInterruptCheckFrequency(t *testing.T) {
 					},
 				},
 			},
-			checkFrequency: 100,
+			checkFrequency: uint(numLoops),
 			context: map[string]interface{}{
-				"items": makeItems(99),
+				"items": makeItems(numLoops - 1),
+			},
+			result: condition.EvaluationResult{
+				ConditionMet: false,
 			},
 			err: fmt.Errorf("failed to evaluate relationship condition: 'condition1' - failed to evaluate condition expression: operation interrupted"),
 		},
