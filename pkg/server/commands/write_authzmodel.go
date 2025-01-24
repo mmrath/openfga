@@ -5,10 +5,11 @@ import (
 	"fmt"
 
 	"github.com/oklog/ulid/v2"
-	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+
+	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 
 	serverconfig "github.com/openfga/openfga/internal/server/config"
 	"github.com/openfga/openfga/pkg/logger"
@@ -59,7 +60,7 @@ func (w *WriteAuthorizationModelCommand) Execute(ctx context.Context, req *openf
 	}
 
 	// Fill in the schema version for old requests, which don't contain it, while we migrate to the new schema version.
-	if req.SchemaVersion == "" {
+	if req.GetSchemaVersion() == "" {
 		req.SchemaVersion = typesystem.SchemaVersion1_1
 	}
 
@@ -73,6 +74,7 @@ func (w *WriteAuthorizationModelCommand) Execute(ctx context.Context, req *openf
 	// Validate the size in bytes of the wire-format encoding of the authorization model.
 	modelSize := proto.Size(model)
 	if modelSize > w.maxAuthorizationModelSizeInBytes {
+		// Consider using serverErrors.ExceededEntityLimit.
 		return nil, status.Error(
 			codes.Code(openfgav1.ErrorCode_exceeded_entity_limit),
 			fmt.Sprintf("model exceeds size limit: %d bytes vs %d bytes", modelSize, w.maxAuthorizationModelSizeInBytes),
@@ -86,10 +88,11 @@ func (w *WriteAuthorizationModelCommand) Execute(ctx context.Context, req *openf
 
 	err = w.backend.WriteAuthorizationModel(ctx, req.GetStoreId(), model)
 	if err != nil {
-		return nil, serverErrors.NewInternalError("Error writing authorization model configuration", err)
+		return nil, serverErrors.
+			HandleError("Error writing authorization model configuration", err)
 	}
 
 	return &openfgav1.WriteAuthorizationModelResponse{
-		AuthorizationModelId: model.Id,
+		AuthorizationModelId: model.GetId(),
 	}, nil
 }

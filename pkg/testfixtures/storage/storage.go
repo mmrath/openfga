@@ -48,8 +48,10 @@ func RunDatastoreTestContainer(t testing.TB, engine string) DatastoreTestContain
 		return NewPostgresTestContainer().RunPostgresTestContainer(t)
 	case "memory":
 		return memoryTestContainer{}
+	case "sqlite":
+		return NewSqliteTestContainer().RunSqliteTestDatabase(t)
 	default:
-		t.Fatalf("'%s' engine is not supported by RunDatastoreTestContainer", engine)
+		t.Fatalf("unsupported datastore engine: %q", engine)
 		return nil
 	}
 }

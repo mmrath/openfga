@@ -2,11 +2,13 @@ package mocks
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"log"
 	"net"
 	"sync"
+	"testing"
 
+	"github.com/stretchr/testify/require"
 	otlpcollector "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/grpc"
 )
@@ -27,22 +29,22 @@ func (s *mockTracingServer) Export(context.Context, *otlpcollector.ExportTraceSe
 	return &otlpcollector.ExportTraceServiceResponse{}, nil
 }
 
-func NewMockTracingServer(port int) (*mockTracingServer, func(), error) {
+func NewMockTracingServer(t testing.TB, port int) *mockTracingServer {
 	mockServer := &mockTracingServer{exportCount: 0, server: grpc.NewServer()}
 	otlpcollector.RegisterTraceServiceServer(mockServer.server, mockServer)
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
-	if err != nil {
-		log.Fatalf("failed to listen: %v", err)
-	}
+	listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", port))
+	require.NoError(t, err)
+	t.Cleanup(mockServer.server.GracefulStop)
 
 	go func() {
 		if err := mockServer.server.Serve(listener); err != nil {
-			log.Fatalf("failed to serve: %v", err)
+			if !errors.Is(err, grpc.ErrServerStopped) {
+				t.Log("mock tracing server failed to serve", err)
+			}
 		}
-		log.Println("server closed")
 	}()
 
-	return mockServer, mockServer.server.Stop, nil
+	return mockServer
 }
 
 func (s *mockTracingServer) GetExportCount() int {

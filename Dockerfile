@@ -1,4 +1,5 @@
-FROM cgr.dev/chainguard/go:1.21@sha256:60abea54575553ffa39feafecc630fbc1c8d1a55e35d359f43d8160bbd4afb9c AS builder
+FROM ghcr.io/grpc-ecosystem/grpc-health-probe:v0.4.37@sha256:9068a47ef9e01022a3162cbd15ba449437dec47be79154d12a09a15cf8861388 AS grpc_health_probe
+FROM cgr.dev/chainguard/go:1.22@sha256:d1dd86fbdfd50c231dc0f8fd9768fbbc31df25baed17e25aab76d24a503a7d44 AS builder
 
 WORKDIR /app
 
@@ -14,13 +15,13 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=bind,target=. \
     CGO_ENABLED=0 go build -o /bin/openfga ./cmd/openfga
 
-FROM cgr.dev/chainguard/static@sha256:fd59d10894f38ce93eb6e587595ccdd8570bfd9c8f6fde7df4c589a5cefd82e2
+FROM cgr.dev/chainguard/static@sha256:5e9c88174a28c259c349f308dd661a6ec61ed5f8c72ecfaefb46cceb811b55a1
 
 EXPOSE 8081
 EXPOSE 8080
 EXPOSE 3000
 
-COPY --from=ghcr.io/grpc-ecosystem/grpc-health-probe:v0.4.23 /ko-app/grpc-health-probe /user/local/bin/grpc_health_probe
+COPY --from=grpc_health_probe /ko-app/grpc-health-probe /usr/local/bin/grpc_health_probe
 COPY --from=builder /bin/openfga /openfga
 
 # Healthcheck configuration for the container using grpc_health_probe

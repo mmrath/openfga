@@ -5,13 +5,16 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	openfgav1 "github.com/openfga/api/proto/openfga/v1"
+	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/protoadapt"
 	"google.golang.org/protobuf/testing/protocmp"
 
+	openfgav1 "github.com/openfga/api/proto/openfga/v1"
+
 	"github.com/openfga/openfga/pkg/storage"
 	"github.com/openfga/openfga/pkg/testutils"
+	"github.com/openfga/openfga/pkg/tuple"
 )
 
 var (
@@ -29,21 +32,49 @@ func RunAllTests(t *testing.T, ds storage.OpenFGADatastore) {
 		require.NoError(t, err)
 		require.True(t, status.IsReady)
 	})
-	// tuples
+
+	// Tuples.
 	t.Run("TestTupleWriteAndRead", func(t *testing.T) { TupleWritingAndReadingTest(t, ds) })
-	t.Run("TestTuplePaginationOptions", func(t *testing.T) { TuplePaginationOptionsTest(t, ds) })
 	t.Run("TestReadChanges", func(t *testing.T) { ReadChangesTest(t, ds) })
 	t.Run("TestReadStartingWithUser", func(t *testing.T) { ReadStartingWithUserTest(t, ds) })
-	t.Run("TestRead", func(t *testing.T) { ReadTest(t, ds) })
+	t.Run("TestReadAndReadPages", func(t *testing.T) { ReadAndReadPageTest(t, ds) })
 
-	// authorization models
+	// Authorization models.
 	t.Run("TestWriteAndReadAuthorizationModel", func(t *testing.T) { WriteAndReadAuthorizationModelTest(t, ds) })
 	t.Run("TestReadAuthorizationModels", func(t *testing.T) { ReadAuthorizationModelsTest(t, ds) })
-	t.Run("TestFindLatestAuthorizationModelID", func(t *testing.T) { FindLatestAuthorizationModelIDTest(t, ds) })
+	t.Run("TestFindLatestAuthorizationModel", func(t *testing.T) { FindLatestAuthorizationModelTest(t, ds) })
 
-	// assertions
+	// Assertions.
 	t.Run("TestWriteAndReadAssertions", func(t *testing.T) { AssertionsTest(t, ds) })
 
-	// stores
+	// Stores.
 	t.Run("TestStore", func(t *testing.T) { StoreTest(t, ds) })
+}
+
+// BootstrapFGAStore is a utility to write an FGA model and relationship tuples to a datastore.
+// It doesn't validate the model. It validates the format of the tuples, but not the types within them.
+// It returns the store_id and FGA AuthorizationModel, respectively.
+func BootstrapFGAStore(
+	t require.TestingT,
+	ds storage.OpenFGADatastore,
+	model string,
+	tupleStrs []string,
+) (string, *openfgav1.AuthorizationModel) {
+	storeID := ulid.Make().String()
+
+	fgaModel := testutils.MustTransformDSLToProtoWithID(model)
+	err := ds.WriteAuthorizationModel(context.Background(), storeID, fgaModel)
+	require.NoError(t, err)
+
+	tuples := tuple.MustParseTupleStrings(tupleStrs...)
+	tuples = testutils.Shuffle(tuples)
+	batchSize := ds.MaxTuplesPerWrite()
+	for batch := 0; batch < len(tuples); batch += batchSize {
+		batchEnd := min(batch+batchSize, len(tuples))
+
+		err := ds.Write(context.Background(), storeID, nil, tuples[batch:batchEnd])
+		require.NoError(t, err)
+	}
+
+	return storeID, fgaModel
 }

@@ -4,9 +4,10 @@ import (
 	"context"
 	"testing"
 
-	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+
+	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 )
 
 func TestUnaryInterceptor(t *testing.T) {
@@ -51,7 +52,7 @@ func (s *mockServerStream) Context() context.Context {
 	return s.ctx
 }
 
-func (s *mockServerStream) RecvMsg(m interface{}) error {
+func (s *mockServerStream) RecvMsg(interface{}) error {
 	return nil
 }
 

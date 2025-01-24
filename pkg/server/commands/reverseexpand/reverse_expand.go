@@ -8,21 +8,23 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/hashicorp/go-multierror"
-	openfgav1 "github.com/openfga/api/proto/openfga/v1"
-	"github.com/sourcegraph/conc/pool"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/types/known/structpb"
 
+	openfgav1 "github.com/openfga/api/proto/openfga/v1"
+
+	"github.com/openfga/openfga/internal/concurrency"
 	"github.com/openfga/openfga/internal/condition"
 	"github.com/openfga/openfga/internal/condition/eval"
 	"github.com/openfga/openfga/internal/graph"
 	serverconfig "github.com/openfga/openfga/internal/server/config"
+	"github.com/openfga/openfga/internal/throttler"
+	"github.com/openfga/openfga/internal/throttler/threshold"
 	"github.com/openfga/openfga/internal/validation"
+	"github.com/openfga/openfga/pkg/logger"
 	"github.com/openfga/openfga/pkg/storage"
-	"github.com/openfga/openfga/pkg/storage/storagewrappers"
 	"github.com/openfga/openfga/pkg/telemetry"
 	"github.com/openfga/openfga/pkg/tuple"
 	"github.com/openfga/openfga/pkg/typesystem"
@@ -35,8 +37,9 @@ type ReverseExpandRequest struct {
 	ObjectType       string
 	Relation         string
 	User             IsUserRef
-	ContextualTuples []*openfgav1.TupleKey
+	ContextualTuples []*openfgav1.TupleKey // TODO remove
 	Context          *structpb.Struct
+	Consistency      openfgav1.ConsistencyPreference
 
 	edge *graph.RelationshipEdge
 }
@@ -56,7 +59,7 @@ var _ IsUserRef = (*UserRefObject)(nil)
 func (u *UserRefObject) isUserRef() {}
 
 func (u *UserRefObject) GetObjectType() string {
-	return u.Object.Type
+	return u.Object.GetType()
 }
 
 func (u *UserRefObject) String() string {
@@ -76,7 +79,7 @@ func (u *UserRefTypedWildcard) GetObjectType() string {
 }
 
 func (u *UserRefTypedWildcard) String() string {
-	return fmt.Sprintf("%s:*", u.Type)
+	return tuple.TypedPublicWildcard(u.Type)
 }
 
 type UserRefObjectRelation struct {
@@ -87,7 +90,7 @@ type UserRefObjectRelation struct {
 func (*UserRefObjectRelation) isUserRef() {}
 
 func (u *UserRefObjectRelation) GetObjectType() string {
-	return tuple.GetType(u.ObjectRelation.Object)
+	return tuple.GetType(u.ObjectRelation.GetObject())
 }
 
 func (u *UserRefObjectRelation) String() string {
@@ -107,10 +110,13 @@ type UserRef struct {
 }
 
 type ReverseExpandQuery struct {
+	logger                  logger.Logger
 	datastore               storage.RelationshipTupleReader
 	typesystem              *typesystem.TypeSystem
 	resolveNodeLimit        uint32
 	resolveNodeBreadthLimit uint32
+
+	dispatchThrottlerConfig threshold.Config
 
 	// visitedUsersetsMap map prevents visiting the same userset through the same edge twice
 	visitedUsersetsMap *sync.Map
@@ -126,20 +132,34 @@ func WithResolveNodeLimit(limit uint32) ReverseExpandQueryOption {
 	}
 }
 
+func WithDispatchThrottlerConfig(config threshold.Config) ReverseExpandQueryOption {
+	return func(d *ReverseExpandQuery) {
+		d.dispatchThrottlerConfig = config
+	}
+}
+
 func WithResolveNodeBreadthLimit(limit uint32) ReverseExpandQueryOption {
 	return func(d *ReverseExpandQuery) {
 		d.resolveNodeBreadthLimit = limit
 	}
 }
 
+// TODO accept ReverseExpandRequest so we can build the datastore object right away.
 func NewReverseExpandQuery(ds storage.RelationshipTupleReader, ts *typesystem.TypeSystem, opts ...ReverseExpandQueryOption) *ReverseExpandQuery {
 	query := &ReverseExpandQuery{
+		logger:                  logger.NewNoopLogger(),
 		datastore:               ds,
 		typesystem:              ts,
 		resolveNodeLimit:        serverconfig.DefaultResolveNodeLimit,
 		resolveNodeBreadthLimit: serverconfig.DefaultResolveNodeBreadthLimit,
-		candidateObjectsMap:     new(sync.Map),
-		visitedUsersetsMap:      new(sync.Map),
+		dispatchThrottlerConfig: threshold.Config{
+			Throttler:    throttler.NewNoopThrottler(),
+			Enabled:      serverconfig.DefaultListObjectsDispatchThrottlingEnabled,
+			Threshold:    serverconfig.DefaultListObjectsDispatchThrottlingDefaultThreshold,
+			MaxThreshold: serverconfig.DefaultListObjectsDispatchThrottlingMaxThreshold,
+		},
+		candidateObjectsMap: new(sync.Map),
+		visitedUsersetsMap:  new(sync.Map),
 	}
 
 	for _, opt := range opts {
@@ -157,46 +177,70 @@ const (
 )
 
 type ReverseExpandResult struct {
-	Err          error
 	Object       string
 	ResultStatus ConditionalResultStatus
 }
 
 type ResolutionMetadata struct {
-	QueryCount *uint32
+	// The number of times we are expanding from each node to find set of objects
+	DispatchCounter *atomic.Uint32
+
+	// WasThrottled indicates whether the request was throttled
+	WasThrottled *atomic.Bool
 }
 
 func NewResolutionMetadata() *ResolutionMetadata {
 	return &ResolutionMetadata{
-		QueryCount: new(uint32),
+		DispatchCounter: new(atomic.Uint32),
+		WasThrottled:    new(atomic.Bool),
 	}
 }
 
-// Execute yields all the objects of the provided objectType that the given user has, possibly, a specific relation with
-// and sends those objects to resultChan. It MUST guarantee no duplicate objects sent.
+func WithLogger(logger logger.Logger) ReverseExpandQueryOption {
+	return func(d *ReverseExpandQuery) {
+		d.logger = logger
+	}
+}
+
+// Execute yields all the objects of the provided objectType that the
+// given user possibly has, a specific relation with and sends those
+// objects to resultChan. It MUST guarantee no duplicate objects sent.
 //
-// If an error is encountered before resolving all objects: the provided channel will NOT be closed and
-// - if the error is context cancellation or deadline: Execute may send the error through the channel
-// - otherwise: Execute will send the error through the channel
-// If no errors, Execute will yield all of the objects on the provided channel and then close the channel
-// to signal that it is done.
+// This function respects context timeouts and cancellations. If an
+// error is encountered (e.g. context timeout) before resolving all
+// objects, then the provided channel will NOT be closed, and it will
+// return the error.
+//
+// If no errors occur, then Execute will yield all of the objects on
+// the provided channel and then close the channel to signal that it
+// is done.
 func (c *ReverseExpandQuery) Execute(
 	ctx context.Context,
 	req *ReverseExpandRequest,
 	resultChan chan<- *ReverseExpandResult,
 	resolutionMetadata *ResolutionMetadata,
-) {
+) error {
 	err := c.execute(ctx, req, resultChan, false, resolutionMetadata)
 	if err != nil {
-		select {
-		case <-ctx.Done():
-			return
-		case resultChan <- &ReverseExpandResult{Err: err}:
-			return
-		}
+		return err
 	}
 
 	close(resultChan)
+	return nil
+}
+
+func (c *ReverseExpandQuery) dispatch(
+	ctx context.Context,
+	req *ReverseExpandRequest,
+	resultChan chan<- *ReverseExpandResult,
+	intersectionOrExclusionInPreviousEdges bool,
+	resolutionMetadata *ResolutionMetadata,
+) error {
+	newcount := resolutionMetadata.DispatchCounter.Add(1)
+	if c.dispatchThrottlerConfig.Enabled {
+		c.throttle(ctx, newcount, resolutionMetadata)
+	}
+	return c.execute(ctx, req, resultChan, intersectionOrExclusionInPreviousEdges, resolutionMetadata)
 }
 
 func (c *ReverseExpandQuery) execute(
@@ -249,10 +293,10 @@ func (c *ReverseExpandQuery) execute(
 	}
 
 	// e.g. 'group:eng#member'
-	if val, ok := req.User.(*UserRefObjectRelation); ok {
-		sourceUserType = tuple.GetType(val.ObjectRelation.GetObject())
-		sourceUserObj = val.ObjectRelation.Object
-		sourceUserRef = typesystem.DirectRelationReference(sourceUserType, val.ObjectRelation.GetRelation())
+	if userset, ok := req.User.(*UserRefObjectRelation); ok {
+		sourceUserType = tuple.GetType(userset.ObjectRelation.GetObject())
+		sourceUserObj = userset.ObjectRelation.GetObject()
+		sourceUserRef = typesystem.DirectRelationReference(sourceUserType, userset.ObjectRelation.GetRelation())
 
 		if req.edge != nil {
 			key := fmt.Sprintf("%s#%s", sourceUserObj, req.edge.String())
@@ -260,13 +304,12 @@ func (c *ReverseExpandQuery) execute(
 				// we've already visited this userset through this edge, exit to avoid an infinite cycle
 				return nil
 			}
+		}
 
-			sourceUserRel := val.ObjectRelation.GetRelation()
-
-			if sourceUserType == req.ObjectType && sourceUserRel == req.Relation {
-				if err := c.trySendCandidate(ctx, intersectionOrExclusionInPreviousEdges, sourceUserObj, resultChan); err != nil {
-					return err
-				}
+		// ReverseExpand(type=document, rel=viewer, user=document:1#viewer) will return "document:1"
+		if tuple.UsersetMatchTypeAndRelation(userset.String(), req.Relation, req.ObjectType) {
+			if err := c.trySendCandidate(ctx, intersectionOrExclusionInPreviousEdges, sourceUserObj, resultChan); err != nil {
+				return err
 			}
 		}
 	}
@@ -280,11 +323,11 @@ func (c *ReverseExpandQuery) execute(
 		return err
 	}
 
-	pool := pool.New().WithContext(ctx)
-	pool.WithCancelOnError()
-	pool.WithFirstError()
-	pool.WithMaxGoroutines(int(c.resolveNodeBreadthLimit))
+	pool := concurrency.NewPool(ctx, int(c.resolveNodeBreadthLimit))
 
+	var errs error
+
+LoopOnEdges:
 	for _, edge := range edges {
 		innerLoopEdge := edge
 		intersectionOrExclusionInPreviousEdges := intersectionOrExclusionInPreviousEdges || innerLoopEdge.TargetReferenceInvolvesIntersectionOrExclusion
@@ -296,6 +339,7 @@ func (c *ReverseExpandQuery) execute(
 			ContextualTuples: req.ContextualTuples,
 			Context:          req.Context,
 			edge:             innerLoopEdge,
+			Consistency:      req.Consistency,
 		}
 		switch innerLoopEdge.Type {
 		case graph.DirectEdge:
@@ -310,24 +354,27 @@ func (c *ReverseExpandQuery) execute(
 					Relation: innerLoopEdge.TargetReference.GetRelation(),
 				},
 			}
-			err = c.execute(ctx, r, resultChan, intersectionOrExclusionInPreviousEdges, resolutionMetadata)
+			err = c.dispatch(ctx, r, resultChan, intersectionOrExclusionInPreviousEdges, resolutionMetadata)
 			if err != nil {
-				return err
+				errs = errors.Join(errs, err)
+				break LoopOnEdges
 			}
 		case graph.TupleToUsersetEdge:
 			pool.Go(func(ctx context.Context) error {
 				return c.reverseExpandTupleToUserset(ctx, r, resultChan, intersectionOrExclusionInPreviousEdges, resolutionMetadata)
 			})
 		default:
-			return fmt.Errorf("unsupported edge type")
+			panic("unsupported edge type")
 		}
 	}
 
-	err = pool.Wait()
-	if err != nil {
-		telemetry.TraceError(span, err)
+	errs = errors.Join(errs, pool.Wait())
+	if errs != nil {
+		telemetry.TraceError(span, errs)
+		return errs
 	}
-	return err
+
+	return nil
 }
 
 func (c *ReverseExpandQuery) reverseExpandTupleToUserset(
@@ -406,14 +453,14 @@ func (c *ReverseExpandQuery) readTuplesAndExecute(
 		if publiclyAssignable {
 			// e.g. 'user:*'
 			userFilter = append(userFilter, &openfgav1.ObjectRelation{
-				Object: fmt.Sprintf("%s:*", targetUserObjectType),
+				Object: tuple.TypedPublicWildcard(targetUserObjectType),
 			})
 		}
 
 		// e.g. 'user:bob'
 		if val, ok := req.User.(*UserRefObject); ok {
 			userFilter = append(userFilter, &openfgav1.ObjectRelation{
-				Object: tuple.BuildObject(val.Object.Type, val.Object.Id),
+				Object: tuple.BuildObject(val.Object.GetType(), val.Object.GetId()),
 			})
 		}
 
@@ -427,24 +474,25 @@ func (c *ReverseExpandQuery) readTuplesAndExecute(
 		// e.g. 'group:eng#member'
 		if val, ok := req.User.(*UserRefObjectRelation); ok {
 			userFilter = append(userFilter, &openfgav1.ObjectRelation{
-				Object: val.ObjectRelation.Object,
+				Object: val.ObjectRelation.GetObject(),
 			})
 		} else {
 			panic("unexpected source for reverse expansion of tuple to userset")
 		}
 	default:
-		return fmt.Errorf("unsupported edge type")
+		panic("unsupported edge type")
 	}
 
-	combinedTupleReader := storagewrappers.NewCombinedTupleReader(c.datastore, req.ContextualTuples)
-
 	// find all tuples of the form req.edge.TargetReference.Type:...#relationFilter@userFilter
-	iter, err := combinedTupleReader.ReadStartingWithUser(ctx, req.StoreID, storage.ReadStartingWithUserFilter{
+	iter, err := c.datastore.ReadStartingWithUser(ctx, req.StoreID, storage.ReadStartingWithUserFilter{
 		ObjectType: req.edge.TargetReference.GetType(),
 		Relation:   relationFilter,
 		UserFilter: userFilter,
+	}, storage.ReadStartingWithUserOptions{
+		Consistency: storage.ConsistencyOptions{
+			Preference: req.Consistency,
+		},
 	})
-	atomic.AddUint32(resolutionMetadata.QueryCount, 1)
 	if err != nil {
 		return err
 	}
@@ -452,37 +500,34 @@ func (c *ReverseExpandQuery) readTuplesAndExecute(
 	// filter out invalid tuples yielded by the database iterator
 	filteredIter := storage.NewFilteredTupleKeyIterator(
 		storage.NewTupleKeyIteratorFromTupleIterator(iter),
-		func(tupleKey *openfgav1.TupleKey) bool {
-			return validation.ValidateCondition(c.typesystem, tupleKey) == nil
-		},
+		validation.FilterInvalidTuples(c.typesystem),
 	)
 	defer filteredIter.Stop()
 
-	pool := pool.New().WithContext(ctx)
-	pool.WithCancelOnError()
-	pool.WithFirstError()
-	pool.WithMaxGoroutines(int(c.resolveNodeBreadthLimit))
+	pool := concurrency.NewPool(ctx, int(c.resolveNodeBreadthLimit))
 
-	var errs *multierror.Error
+	var errs error
+
+LoopOnIterator:
 	for {
 		tk, err := filteredIter.Next(ctx)
 		if err != nil {
 			if errors.Is(err, storage.ErrIteratorDone) {
 				break
 			}
-
-			return err
+			errs = errors.Join(errs, err)
+			break LoopOnIterator
 		}
 
 		condEvalResult, err := eval.EvaluateTupleCondition(ctx, tk, c.typesystem, req.Context)
 		if err != nil {
-			errs = multierror.Append(errs, err)
+			errs = errors.Join(errs, err)
 			continue
 		}
 
 		if !condEvalResult.ConditionMet {
 			if len(condEvalResult.MissingParameters) > 0 {
-				errs = multierror.Append(errs, condition.NewEvaluationError(
+				errs = errors.Join(errs, condition.NewEvaluationError(
 					tk.GetCondition().GetName(),
 					fmt.Errorf("tuple '%s' is missing context parameters '%v'",
 						tuple.TupleKeyToString(tk),
@@ -502,11 +547,11 @@ func (c *ReverseExpandQuery) readTuplesAndExecute(
 		case graph.TupleToUsersetEdge:
 			newRelation = req.edge.TargetReference.GetRelation()
 		default:
-			return fmt.Errorf("unsupported edge type")
+			panic("unsupported edge type")
 		}
 
 		pool.Go(func(ctx context.Context) error {
-			return c.execute(ctx, &ReverseExpandRequest{
+			return c.dispatch(ctx, &ReverseExpandRequest{
 				StoreID:    req.StoreID,
 				ObjectType: req.ObjectType,
 				Relation:   req.Relation,
@@ -520,13 +565,14 @@ func (c *ReverseExpandQuery) readTuplesAndExecute(
 				ContextualTuples: req.ContextualTuples,
 				Context:          req.Context,
 				edge:             req.edge,
+				Consistency:      req.Consistency,
 			}, resultChan, intersectionOrExclusionInPreviousEdges, resolutionMetadata)
 		})
 	}
 
-	errs = multierror.Append(errs, pool.Wait())
-	if errs.ErrorOrNil() != nil {
-		telemetry.TraceError(span, errs.ErrorOrNil())
+	errs = errors.Join(errs, pool.Wait())
+	if errs != nil {
+		telemetry.TraceError(span, errs)
 		return errs
 	}
 
@@ -559,4 +605,24 @@ func (c *ReverseExpandQuery) trySendCandidate(ctx context.Context, intersectionO
 	}
 
 	return nil
+}
+
+func (c *ReverseExpandQuery) throttle(ctx context.Context, currentNumDispatch uint32, metadata *ResolutionMetadata) {
+	span := trace.SpanFromContext(ctx)
+
+	shouldThrottle := threshold.ShouldThrottle(
+		ctx,
+		currentNumDispatch,
+		c.dispatchThrottlerConfig.Threshold,
+		c.dispatchThrottlerConfig.MaxThreshold,
+	)
+
+	span.SetAttributes(
+		attribute.Int("dispatch_count", int(currentNumDispatch)),
+		attribute.Bool("is_throttled", shouldThrottle))
+
+	if shouldThrottle {
+		metadata.WasThrottled.Store(true)
+		c.dispatchThrottlerConfig.Throttler.Throttle(ctx)
+	}
 }

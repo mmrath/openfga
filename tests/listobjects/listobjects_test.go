@@ -2,13 +2,14 @@ package listobjects
 
 import (
 	"testing"
+	"time"
+
+	"go.uber.org/goleak"
 
 	openfgav1 "github.com/openfga/api/proto/openfga/v1"
-	"github.com/stretchr/testify/require"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/openfga/openfga/cmd/run"
+	"github.com/openfga/openfga/internal/server/config"
+	"github.com/openfga/openfga/pkg/testutils"
 	"github.com/openfga/openfga/tests"
 )
 
@@ -24,19 +25,25 @@ func TestListObjectsMySQL(t *testing.T) {
 	testRunAll(t, "mysql")
 }
 
+func TestListObjectsSQLite(t *testing.T) {
+	testRunAll(t, "sqlite")
+}
+
 func testRunAll(t *testing.T, engine string) {
-	cfg := run.MustDefaultConfigWithRandomPorts()
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+	cfg := config.MustDefaultConfig()
+	cfg.Experimentals = append(cfg.Experimentals, "enable-check-optimizations")
 	cfg.Log.Level = "error"
 	cfg.Datastore.Engine = engine
+	cfg.ListObjectsDeadline = 0 // no deadline
+	// extend the timeout for the tests, coverage makes them slower
+	cfg.RequestTimeout = 10 * time.Second
 
-	cancel := tests.StartServer(t, cfg)
-	defer cancel()
+	tests.StartServer(t, cfg)
 
-	conn, err := grpc.Dial(cfg.GRPC.Addr,
-		grpc.WithBlock(),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
-	require.NoError(t, err)
-	defer conn.Close()
+	conn := testutils.CreateGrpcConnection(t, cfg.GRPC.Addr)
+
 	RunAllTests(t, openfgav1.NewOpenFGAServiceClient(conn))
 }

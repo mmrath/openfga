@@ -2,18 +2,20 @@ package test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/oklog/ulid/v2"
-	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 	"github.com/stretchr/testify/require"
 
-	"github.com/openfga/openfga/pkg/testutils"
+	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 
 	"github.com/openfga/openfga/internal/graph"
 	"github.com/openfga/openfga/pkg/server/commands/reverseexpand"
 	"github.com/openfga/openfga/pkg/storage"
+	"github.com/openfga/openfga/pkg/storage/storagewrappers"
+	storagetest "github.com/openfga/openfga/pkg/storage/test"
 	"github.com/openfga/openfga/pkg/tuple"
 	"github.com/openfga/openfga/pkg/typesystem"
 )
@@ -22,7 +24,7 @@ func TestReverseExpand(t *testing.T, ds storage.OpenFGADatastore) {
 	tests := []struct {
 		name                 string
 		model                string
-		tuples               []*openfgav1.TupleKey
+		tuples               []string
 		request              *reverseexpand.ReverseExpandRequest
 		resolveNodeLimit     uint32
 		expectedResult       []*reverseexpand.ReverseExpandResult
@@ -43,18 +45,20 @@ func TestReverseExpand(t *testing.T, ds storage.OpenFGADatastore) {
 				},
 				ContextualTuples: []*openfgav1.TupleKey{},
 			},
-			model: `model
-	schema 1.1
-type user
+			model: `
+			model
+			  schema 1.1
 
-type document
-  relations
-	define allowed: [user]
-	define viewer: [user] and allowed`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("document:1", "viewer", "user:jon"),
-				tuple.NewTupleKey("document:2", "viewer", "user:jon"),
-				tuple.NewTupleKey("document:3", "allowed", "user:jon"),
+			type user
+
+			type document
+			  relations
+			    define allowed: [user]
+			    define viewer: [user] and allowed`,
+			tuples: []string{
+				"document:1#viewer@user:jon",
+				"document:2#viewer@user:jon",
+				"document:3#allowed@user:jon",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -82,24 +86,26 @@ type document
 				},
 				ContextualTuples: []*openfgav1.TupleKey{},
 			},
-			model: `model
-	schema 1.1
-type user
+			model: `
+			model
+			  schema 1.1
 
-type folder
-  relations
-	define writer: [user]
-	define editor: [user]
-	define viewer: writer and editor
+			type user
 
-type document
-  relations
-	define parent: [folder]
-	define viewer: viewer from parent`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("document:1", "parent", "folder:X"),
-				tuple.NewTupleKey("folder:X", "writer", "user:jon"),
-				tuple.NewTupleKey("folder:X", "editor", "user:jon"),
+			type folder
+			  relations
+			    define writer: [user]
+			    define editor: [user]
+			    define viewer: writer and editor
+
+			type document
+			  relations
+			    define parent: [folder]
+			    define viewer: viewer from parent`,
+			tuples: []string{
+				"document:1#parent@folder:X",
+				"folder:X#writer@user:jon",
+				"folder:X#editor@user:jon",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -127,15 +133,17 @@ type document
 					tuple.NewTupleKey("document:doc3", "viewer", "user:jon"),
 				},
 			},
-			model: `model
-	schema 1.1
-type user
+			model: `
+			model
+			  schema 1.1
 
-type document
-  relations
-	define viewer: [user]`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("document:doc1", "viewer", "user:jon"),
+			type user
+
+			type document
+			  relations
+			    define viewer: [user]`,
+			tuples: []string{
+				"document:doc1#viewer@user:jon",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -160,22 +168,24 @@ type document
 					Id:   "jon",
 				}},
 			},
-			model: `model
-	schema 1.1
-type user
+			model: `
+			model
+			  schema 1.1
 
-type group
-  relations
-	define member: [user]
+			type user
 
-type document
-  relations
-	define viewer: [user, group#member]`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("document:doc1", "viewer", "user:jon"),
-				tuple.NewTupleKey("document:doc2", "viewer", "user:bob"),
-				tuple.NewTupleKey("document:doc3", "viewer", "group:openfga#member"),
-				tuple.NewTupleKey("group:openfga", "member", "user:jon"),
+			type group
+		  	  relations
+			    define member: [user]
+
+			type document
+			  relations
+			    define viewer: [user, group#member]`,
+			tuples: []string{
+				"document:doc1#viewer@user:jon",
+				"document:doc2#viewer@user:bob",
+				"document:doc3#viewer@group:openfga#member",
+				"group:openfga#member@user:jon",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -200,23 +210,25 @@ type document
 					Id:   "jon",
 				}},
 			},
-			model: `model
-	schema 1.1
-type user
+			model: `
+			model
+			  schema 1.1
 
-type group
-  relations
-	define member: [user]
+			type user
 
-type document
-  relations
-	define owner: [user, group#member]
-	define viewer: owner`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("document:doc1", "owner", "user:jon"),
-				tuple.NewTupleKey("document:doc2", "owner", "user:bob"),
-				tuple.NewTupleKey("document:doc3", "owner", "group:openfga#member"),
-				tuple.NewTupleKey("group:openfga", "member", "user:jon"),
+			type group
+			  relations
+			    define member: [user]
+
+			type document
+			  relations
+			    define owner: [user, group#member]
+			    define viewer: owner`,
+			tuples: []string{
+				"document:doc1#owner@user:jon",
+				"document:doc2#owner@user:bob",
+				"document:doc3#owner@group:openfga#member",
+				"group:openfga#member@user:jon",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -247,35 +259,35 @@ type document
 					tuple.NewTupleKey("folder:folder6", "viewer", "user:bob"),
 				},
 			},
-			model: `model
-	schema 1.1
-type user
+			model: `
+			model
+			  schema 1.1
 
-type group
-  relations
-	define member: [user, group#member]
+			type user
 
-type folder
-  relations
-	define parent: [folder]
-	define viewer: [user, group#member] or viewer from parent
+			type group
+			  relations
+			    define member: [user, group#member]
 
-type document
-  relations
-	define parent: [folder]
-	define viewer: viewer from parent`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("folder:folder1", "viewer", "user:jon"),
-				tuple.NewTupleKey("folder:folder2", "parent", "folder:folder1"),
-				tuple.NewTupleKey("folder:folder3", "parent", "folder:folder2"),
-				tuple.NewTupleKey("folder:folder4", "viewer", "group:eng#member"),
+			type folder
+			  relations
+			    define parent: [folder]
+			    define viewer: [user, group#member] or viewer from parent
 
-				tuple.NewTupleKey("document:doc1", "parent", "folder:folder3"),
-				tuple.NewTupleKey("document:doc2", "parent", "folder:folder5"),
-				tuple.NewTupleKey("document:doc3", "parent", "folder:folder6"),
-
-				tuple.NewTupleKey("group:eng", "member", "group:openfga#member"),
-				tuple.NewTupleKey("group:openfga", "member", "user:jon"),
+			type document
+			  relations
+			    define parent: [folder]
+			    define viewer: viewer from parent`,
+			tuples: []string{
+				"folder:folder1#viewer@user:jon",
+				"folder:folder2#parent@folder:folder1",
+				"folder:folder3#parent@folder:folder2",
+				"folder:folder4#viewer@group:eng#member",
+				"document:doc1#parent@folder:folder3",
+				"document:doc2#parent@folder:folder5",
+				"document:doc3#parent@folder:folder6",
+				"group:eng#member@group:openfga#member",
+				"group:openfga#member@user:jon",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -302,18 +314,20 @@ type document
 					},
 				},
 			},
-			model: `model
-	schema 1.1
-type user
+			model: `
+			model
+			  schema 1.1
 
-type folder
-  relations
-	define parent: [folder]
-	define viewer: [user] or viewer from parent`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("folder:folder1", "viewer", "user:jon"),
-				tuple.NewTupleKey("folder:folder2", "parent", "folder:folder1"),
-				tuple.NewTupleKey("folder:folder3", "parent", "folder:folder2"),
+			type user
+
+			type folder
+			  relations
+			    define parent: [folder]
+			    define viewer: [user] or viewer from parent`,
+			tuples: []string{
+				"folder:folder1#viewer@user:jon",
+				"folder:folder2#parent@folder:folder1",
+				"folder:folder3#parent@folder:folder2",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -345,18 +359,20 @@ type folder
 				},
 			},
 			resolveNodeLimit: 2,
-			model: `model
-	schema 1.1
-type user
+			model: `
+			model
+			  schema 1.1
 
-type folder
-  relations
-	define parent: [folder]
-	define viewer: [user] or viewer from parent`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("folder:folder1", "viewer", "user:jon"),
-				tuple.NewTupleKey("folder:folder2", "parent", "folder:folder1"),
-				tuple.NewTupleKey("folder:folder3", "parent", "folder:folder2"),
+			type user
+
+			type folder
+			  relations
+			    define parent: [folder]
+			    define viewer: [user] or viewer from parent`,
+			tuples: []string{
+				"folder:folder1#viewer@user:jon",
+				"folder:folder2#parent@folder:folder1",
+				"folder:folder3#parent@folder:folder2",
 			},
 			expectedError:        graph.ErrResolutionDepthExceeded,
 			expectedDSQueryCount: 0,
@@ -374,17 +390,19 @@ type folder
 					},
 				},
 			},
-			model: `model
-	schema 1.1
-type user
+			model: `
+			model
+			  schema 1.1
 
-type group
-  relations
-	define member: [user, group#member]`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("group:opensource", "member", "group:eng#member"),
-				tuple.NewTupleKey("group:eng", "member", "group:iam#member"),
-				tuple.NewTupleKey("group:iam", "member", "user:jon"),
+			type user
+
+			type group
+			  relations
+			    define member: [user, group#member]`,
+			tuples: []string{
+				"group:opensource#member@group:eng#member",
+				"group:eng#member@group:iam#member",
+				"group:iam#member@user:jon",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -393,6 +411,10 @@ type group
 				},
 				{
 					Object:       "group:eng",
+					ResultStatus: reverseexpand.NoFurtherEvalStatus,
+				},
+				{
+					Object:       "group:iam",
 					ResultStatus: reverseexpand.NoFurtherEvalStatus,
 				},
 			},
@@ -411,13 +433,15 @@ type group
 					},
 				},
 			},
-			model: `model
-	schema 1.1
-type group
-  relations
-	define member: [group#member]`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("group:iam", "member", "group:iam#member"),
+			model: `
+			model
+			  schema 1.1
+
+			type group
+			  relations
+			    define member: [group#member]`,
+			tuples: []string{
+				"group:iam#member@group:iam#member",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -440,18 +464,20 @@ type group
 					},
 				},
 			},
-			model: `model
-	schema 1.1
-type user
+			model: `
+			model
+			  schema 1.1
 
-type document
-  relations
-	define owner: [user]
-	define editor: owner
-	define viewer: [document#editor]`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("document:1", "viewer", "document:1#editor"),
-				tuple.NewTupleKey("document:1", "owner", "user:jon"),
+			type user
+
+			type document
+			  relations
+			    define owner: [user]
+			    define editor: owner
+			    define viewer: [document#editor]`,
+			tuples: []string{
+				"document:1#viewer@document:1#editor",
+				"document:1#owner@user:jon",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -474,21 +500,23 @@ type document
 					},
 				},
 			},
-			model: `model
-	schema 1.1
-type user
+			model: `
+			model
+			  schema 1.1
 
-type group
-  relations
-	define manager: [user]
-	define member: manager
+			  type user
 
-type document
-  relations
-	define viewer: [group#member]`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("document:1", "viewer", "group:eng#member"),
-				tuple.NewTupleKey("group:eng", "manager", "user:jon"),
+			type group
+			  relations
+			    define manager: [user]
+			    define member: manager
+
+			type document
+			  relations
+			    define viewer: [group#member]`,
+			tuples: []string{
+				"document:1#viewer@group:eng#member",
+				"group:eng#manager@user:jon",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -511,22 +539,24 @@ type document
 					},
 				},
 			},
-			model: `model
-	schema 1.1
-type user
+			model: `
+			model
+			  schema 1.1
 
-type team
-  relations
-	define admin: [user]
-	define member: admin
+			type user
 
-type trial
-  relations
-	define editor: [team#member]
-	define viewer: editor`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("trial:1", "editor", "team:devs#member"),
-				tuple.NewTupleKey("team:devs", "admin", "user:fede"),
+			type team
+			  relations
+			    define admin: [user]
+			    define member: admin
+
+			type trial
+			  relations
+			    define editor: [team#member]
+			    define viewer: editor`,
+			tuples: []string{
+				"trial:1#editor@team:devs#member",
+				"team:devs#admin@user:fede",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -549,20 +579,22 @@ type trial
 					},
 				},
 			},
-			model: `model
-	schema 1.1
-type organization
-  relations
-	define viewer: [organization]
-	define can_view: viewer
+			model: `
+			model
+			  schema 1.1
 
-type document
-  relations
-	define parent: [organization]
-	define view: can_view from parent`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("document:1", "parent", "organization:1"),
-				tuple.NewTupleKey("organization:1", "viewer", "organization:2"),
+			type organization
+			  relations
+			    define viewer: [organization]
+			    define can_view: viewer
+
+			type document
+			  relations
+			    define parent: [organization]
+			    define view: can_view from parent`,
+			tuples: []string{
+				"document:1#parent@organization:1",
+				"organization:1#viewer@organization:2",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -580,17 +612,19 @@ type document
 				Relation:   "viewer",
 				User:       &reverseexpand.UserRefTypedWildcard{Type: "user"},
 			},
-			model: `model
-	schema 1.1
-type user
+			model: `
+			model
+			  schema 1.1
 
-type document
-  relations
-	define viewer: [user, user:*]`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("document:1", "viewer", "user:*"),
-				tuple.NewTupleKey("document:2", "viewer", "user:*"),
-				tuple.NewTupleKey("document:3", "viewer", "user:jon"),
+			type user
+
+			type document
+			  relations
+			    define viewer: [user, user:*]`,
+			tuples: []string{
+				"document:1#viewer@user:*",
+				"document:2#viewer@user:*",
+				"document:3#viewer@user:jon",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -612,19 +646,23 @@ type document
 				Relation:   "viewer",
 				User:       &reverseexpand.UserRefTypedWildcard{Type: "user"},
 			},
-			model: `model
-	schema 1.1
-type user
-type group
-  relations
-	define member: [user:*]
-type document
-  relations
-	define viewer: [group#member]`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("document:1", "viewer", "group:eng#member"),
-				tuple.NewTupleKey("document:2", "viewer", "group:fga#member"),
-				tuple.NewTupleKey("group:eng", "member", "user:*"),
+			model: `
+			model
+			  schema 1.1
+
+			type user
+
+			type group
+			  relations
+			    define member: [user:*]
+
+			type document
+			  relations
+			    define viewer: [group#member]`,
+			tuples: []string{
+				"document:1#viewer@group:eng#member",
+				"document:2#viewer@group:fga#member",
+				"group:eng#member@user:*",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -647,22 +685,27 @@ type document
 					},
 				},
 			},
-			model: `model
-	schema 1.1
-type user
-type team
-  relations
-	define member: [user]
-type group
-  relations
-	define member: [team#member]
-type document
-  relations
-	define viewer: [group#member]`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("team:tigers", "member", "user:jon"),
-				tuple.NewTupleKey("group:eng", "member", "team:tigers#member"),
-				tuple.NewTupleKey("document:1", "viewer", "group:eng#member"),
+			model: `
+			model
+			  schema 1.1
+
+			type user
+
+			type team
+			  relations
+			    define member: [user]
+
+			type group
+			  relations
+			    define member: [team#member]
+
+			type document
+			  relations
+			    define viewer: [group#member]`,
+			tuples: []string{
+				"team:tigers#member@user:jon",
+				"group:eng#member@team:tigers#member",
+				"document:1#viewer@group:eng#member",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -685,22 +728,27 @@ type document
 					},
 				},
 			},
-			model: `model
-	schema 1.1
-type user
-type group
-  relations
-	define member: [team#member]
-type team
-  relations
-	define member: [user:*]
-type document
-  relations
-	define viewer: [group#member]`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("team:tigers", "member", "user:*"),
-				tuple.NewTupleKey("group:eng", "member", "team:tigers#member"),
-				tuple.NewTupleKey("document:1", "viewer", "group:eng#member"),
+			model: `
+			model
+			  schema 1.1
+
+			type user
+
+			type group
+			  relations
+			    define member: [team#member]
+
+			type team
+			  relations
+			    define member: [user:*]
+
+			type document
+			  relations
+			    define viewer: [group#member]`,
+			tuples: []string{
+				"team:tigers#member@user:*",
+				"group:eng#member@team:tigers#member",
+				"document:1#viewer@group:eng#member",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -720,15 +768,18 @@ type document
 					Object: &openfgav1.Object{Type: "user", Id: "jon"},
 				},
 			},
-			model: `model
-	schema 1.1
-type user
-type document
-  relations
-	define viewer: [user, user:*]`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("document:1", "viewer", "user:*"),
-				tuple.NewTupleKey("document:2", "viewer", "user:jon"),
+			model: `
+			model
+			  schema 1.1
+
+			type user
+
+			type document
+			  relations
+			    define viewer: [user, user:*]`,
+			tuples: []string{
+				"document:1#viewer@user:*",
+				"document:2#viewer@user:jon",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -755,20 +806,24 @@ type document
 					},
 				},
 			},
-			model: `model
-	schema 1.1
-type user
-type group
-  relations
-	define member: [user, user:*]
-type document
-  relations
-	define viewer: [group#member]`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("group:eng", "member", "user:*"),
-				tuple.NewTupleKey("group:fga", "member", "user:jon"),
-				tuple.NewTupleKey("document:1", "viewer", "group:eng#member"),
-				tuple.NewTupleKey("document:2", "viewer", "group:fga#member"),
+			model: `
+			model
+			  schema 1.1
+
+			type user
+
+			type group
+			  relations
+			    define member: [user, user:*]
+
+			type document
+			  relations
+			    define viewer: [group#member]`,
+			tuples: []string{
+				"group:eng#member@user:*",
+				"group:fga#member@user:jon",
+				"document:1#viewer@group:eng#member",
+				"document:2#viewer@group:fga#member",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -795,21 +850,25 @@ type document
 					},
 				},
 			},
-			model: `model
-	schema 1.1
-type user
-type group
-  relations
-	define member: [user:*]
-type document
-  relations
-	define viewer: [group#member]`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("group:eng", "member", "user:*"),
-				tuple.NewTupleKey("group:other", "member", "employee:*"), // assume this comes from a prior model
-				tuple.NewTupleKey("document:1", "viewer", "group:eng#member"),
-				tuple.NewTupleKey("document:2", "viewer", "group:fga#member"),
-				tuple.NewTupleKey("document:3", "viewer", "group:other#member"),
+			model: `
+			model
+			  schema 1.1
+
+			type user
+
+			type group
+			  relations
+			    define member: [user:*]
+
+			type document
+			  relations
+			    define viewer: [group#member]`,
+			tuples: []string{
+				"group:eng#member@user:*",
+				"group:other#member@employee:*", // assume this comes from a prior model
+				"document:1#viewer@group:eng#member",
+				"document:2#viewer@group:fga#member",
+				"document:3#viewer@group:other#member",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -832,18 +891,22 @@ type document
 					},
 				},
 			},
-			model: `model
-	schema 1.1
-type user
-type group
-  relations
-	define member: [user]
-type resource
-  relations
-	define reader: [user, user:*, group#member] or writer
-	define writer: [user, user:*, group#member]`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("resource:x", "writer", "user:*"),
+			model: `
+			model
+			  schema 1.1
+
+			type user
+
+			type group
+			  relations
+			    define member: [user]
+
+			type resource
+			  relations
+			    define reader: [user, user:*, group#member] or writer
+			    define writer: [user, user:*, group#member]`,
+			tuples: []string{
+				"resource:x#writer@user:*",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -867,12 +930,14 @@ type resource
 					tuple.NewTupleKey("document:2", "viewer", "user:jon"),
 				},
 			},
-			model: `model
-	schema 1.1
-type user
-type document
-  relations
-	define viewer: [user, user:*]`,
+			model: `
+			model
+			  schema 1.1
+
+			type user
+			type document
+			  relations
+			    define viewer: [user, user:*]`,
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
 					Object:       "document:1",
@@ -897,13 +962,17 @@ type document
 					tuple.NewTupleKey("document:2", "viewer", "user:*"),
 				},
 			},
-			model: `model
-	schema 1.1
-type user
-type employee
-type document
-  relations
-	define viewer: [user:*]`,
+			model: `
+			model
+			  schema 1.1
+
+			type user
+
+			type employee
+
+			type document
+			  relations
+			    define viewer: [user:*]`,
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
 					Object:       "document:2",
@@ -928,17 +997,19 @@ type document
 					tuple.NewTupleKey("document:1", "viewer", "group:eng#member"),
 				},
 			},
-			model: `model
-	schema 1.1
-type user
+			model: `
+			model
+			  schema 1.1
 
-type group
-  relations
-	define member: [user]
+			type user
 
-type document
-  relations
-	define viewer: [group#member]`,
+			type group
+			  relations
+			    define member: [user]
+
+			type document
+			  relations
+			    define viewer: [group#member]`,
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
 					Object:       "document:1",
@@ -958,23 +1029,25 @@ type document
 					Id:   "jon",
 				}},
 			},
-			model: `model
-	schema 1.1
-type user
+			model: `
+			model
+			  schema 1.1
 
-type folder
-  relations
-	define viewer: [user, user:*]
+			type user
 
-type document
-  relations
-	define parent: [folder]
-	define viewer: viewer from parent`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("document:1", "parent", "folder:1"),
-				tuple.NewTupleKey("document:2", "parent", "folder:2"),
-				tuple.NewTupleKey("folder:1", "viewer", "user:jon"),
-				tuple.NewTupleKey("folder:2", "viewer", "user:*"),
+			type folder
+			  relations
+			    define viewer: [user, user:*]
+
+			type document
+			  relations
+			    define parent: [folder]
+			    define viewer: viewer from parent`,
+			tuples: []string{
+				"document:1#parent@folder:1",
+				"document:2#parent@folder:2",
+				"folder:1#viewer@user:jon",
+				"folder:2#viewer@user:*",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -999,24 +1072,26 @@ type document
 					Id:   "jon",
 				}},
 			},
-			model: `model
-	schema 1.1
-type user
-type employee
+			model: `
+			model
+			  schema 1.1
 
-type folder
-  relations
-	define viewer: [user, employee:*]
+			type user
+			type employee
 
-type document
-  relations
-	define parent: [folder]
-	define viewer: viewer from parent`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("document:1", "parent", "folder:1"),
-				tuple.NewTupleKey("document:2", "parent", "folder:2"),
-				tuple.NewTupleKey("folder:1", "viewer", "user:jon"),
-				tuple.NewTupleKey("folder:2", "viewer", "user:*"),
+			type folder
+			  relations
+			    define viewer: [user, employee:*]
+
+			type document
+			  relations
+			    define parent: [folder]
+			    define viewer: viewer from parent`,
+			tuples: []string{
+				"document:1#parent@folder:1",
+				"document:2#parent@folder:2",
+				"folder:1#viewer@user:jon",
+				"folder:2#viewer@user:*",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -1037,25 +1112,28 @@ type document
 					Id:   "jon",
 				}},
 			},
-			model: `model
-	schema 1.1
-type user
+			model: `
+			model
+			  schema 1.1
 
-type group
-  relations
-	define member: [user:*]
-type folder
-  relations
-	define viewer: [group#member]
+			type user
 
-type document
-  relations
-	define parent: [folder]
-	define viewer: viewer from parent`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("document:1", "parent", "folder:1"),
-				tuple.NewTupleKey("folder:1", "viewer", "group:eng#member"),
-				tuple.NewTupleKey("group:eng", "member", "user:*"),
+			type group
+			  relations
+			    define member: [user:*]
+
+			type folder
+			  relations
+			    define viewer: [group#member]
+
+			type document
+			  relations
+			    define parent: [folder]
+			    define viewer: viewer from parent`,
+			tuples: []string{
+				"document:1#parent@folder:1",
+				"folder:1#viewer@group:eng#member",
+				"group:eng#member@user:*",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -1076,26 +1154,28 @@ type document
 					Id:   "anne",
 				}},
 			},
-			model: `model
-	schema 1.1
-type user
+			model: `
+			model
+			  schema 1.1
 
-type org
-  relations
-	define dept: [group]
-	define dept_member: member from dept
+			type user
 
-type group
-  relations
-	define member: [user]
+			type org
+			  relations
+			    define dept: [group]
+			    define dept_member: member from dept
 
-type resource
-  relations
-	define writer: [org#dept_member]`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("resource:eng_handbook", "writer", "org:eng#dept_member"),
-				tuple.NewTupleKey("org:eng", "dept", "group:fga"),
-				tuple.NewTupleKey("group:fga", "member", "user:anne"),
+			type group
+			  relations
+			    define member: [user]
+
+			type resource
+			  relations
+			    define writer: [org#dept_member]`,
+			tuples: []string{
+				"resource:eng_handbook#writer@org:eng#dept_member",
+				"org:eng#dept@group:fga",
+				"group:fga#member@user:anne",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -1116,27 +1196,29 @@ type resource
 					Id:   "anne",
 				}},
 			},
-			model: `model
-	schema 1.1
-type user
+			model: `
+			model
+			  schema 1.1
 
-type org
-  relations
-	define dept: [group]
-	define dept_member: member from dept
+			type user
 
-type group
-  relations
-	define member: [user]
+			type org
+			  relations
+			    define dept: [group]
+			    define dept_member: member from dept
 
-type resource
-  relations
-	define writer: [org#dept_member]
-	define reader: [org#dept_member] or writer`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("resource:eng_handbook", "writer", "org:eng#dept_member"),
-				tuple.NewTupleKey("org:eng", "dept", "group:fga"),
-				tuple.NewTupleKey("group:fga", "member", "user:anne"),
+			type group
+			  relations
+			    define member: [user]
+
+			type resource
+			  relations
+			    define writer: [org#dept_member]
+			    define reader: [org#dept_member] or writer`,
+			tuples: []string{
+				"resource:eng_handbook#writer@org:eng#dept_member",
+				"org:eng#dept@group:fga",
+				"group:fga#member@user:anne",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -1157,16 +1239,18 @@ type resource
 					Id:   "wonder",
 				}},
 			},
-			model: `model
-	schema 1.1
-type user
+			model: `
+			model
+			  schema 1.1
 
-type node
-  relations
-	define parent: [node]
-	define editor: [user] or editor from parent`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("node:abc", "editor", "user:wonder"),
+			type user
+
+			type node
+			  relations
+			    define parent: [node]
+			    define editor: [user] or editor from parent`,
+			tuples: []string{
+				"node:abc#editor@user:wonder",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -1187,22 +1271,24 @@ type node
 					Id:   "jon",
 				}},
 			},
-			model: `model
-	schema 1.1
-type user
+			model: `
+			model
+			  schema 1.1
 
-type group
-  relations
-	define member: [user]
-	define maintainer: [user]
+			type user
 
-type document
-  relations
-	define viewer: [group#member,group#maintainer]`,
-			tuples: []*openfgav1.TupleKey{
-				tuple.NewTupleKey("document:1", "viewer", "group:example1#maintainer"),
-				tuple.NewTupleKey("group:example1", "maintainer", "user:jon"),
-				tuple.NewTupleKey("group:example1", "member", "user:jon"),
+			type group
+			  relations
+			    define member: [user]
+			    define maintainer: [user]
+
+			type document
+			  relations
+			    define viewer: [group#member,group#maintainer]`,
+			tuples: []string{
+				"document:1#viewer@group:example1#maintainer",
+				"group:example1#maintainer@user:jon",
+				"group:example1#member@user:jon",
 			},
 			expectedResult: []*reverseexpand.ReverseExpandResult{
 				{
@@ -1216,18 +1302,8 @@ type document
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			require := require.New(t)
-
-			ctx := context.Background()
-			store := ulid.Make().String()
-			test.request.StoreID = store
-
-			model := testutils.MustTransformDSLToProtoWithID(test.model)
-			err := ds.WriteAuthorizationModel(ctx, store, model)
-			require.NoError(err)
-
-			err = ds.Write(ctx, store, nil, test.tuples)
-			require.NoError(err)
+			storeID, model := storagetest.BootstrapFGAStore(t, ds, test.model, test.tuples)
+			test.request.StoreID = storeID
 
 			var opts []reverseexpand.ReverseExpandQueryOption
 
@@ -1235,7 +1311,11 @@ type document
 				opts = append(opts, reverseexpand.WithResolveNodeLimit(test.resolveNodeLimit))
 			}
 
-			reverseExpandQuery := reverseexpand.NewReverseExpandQuery(ds, typesystem.New(model), opts...)
+			ts, err := typesystem.New(model)
+			require.NoError(t, err)
+
+			ds := storagewrappers.NewRequestStorageWrapperForListAPIs(ds, test.request.ContextualTuples, 30)
+			reverseExpandQuery := reverseexpand.NewReverseExpandQuery(ds, ts, opts...)
 
 			resultChan := make(chan *reverseexpand.ReverseExpandResult, 100)
 
@@ -1244,35 +1324,38 @@ type document
 
 			resolutionMetadata := reverseexpand.NewResolutionMetadata()
 
+			reverseExpandErrCh := make(chan error, 1)
 			go func() {
-				reverseExpandQuery.Execute(timeoutCtx, test.request, resultChan, resolutionMetadata)
+				errReverseExpand := reverseExpandQuery.Execute(timeoutCtx, test.request, resultChan, resolutionMetadata)
+				if errReverseExpand != nil {
+					reverseExpandErrCh <- errReverseExpand
+				}
 			}()
 
 			var results []*reverseexpand.ReverseExpandResult
-			reverseExpandErrCh := make(chan error)
-			go func() {
-				for result := range resultChan {
-					if result.Err != nil {
-						reverseExpandErrCh <- result.Err
-						return
+
+			for {
+				select {
+				case errFromChannel := <-reverseExpandErrCh:
+					if errors.Is(errFromChannel, context.DeadlineExceeded) {
+						require.FailNow(t, "unexpected timeout")
 					}
-
-					results = append(results, result)
+					require.ErrorIs(t, errFromChannel, test.expectedError)
+					return
+				case res, channelOpen := <-resultChan:
+					if !channelOpen {
+						t.Log("channel closed")
+						if test.expectedError == nil {
+							require.ElementsMatch(t, test.expectedResult, results)
+						} else {
+							require.FailNow(t, "expected an error, got none")
+						}
+						return
+					} else {
+						t.Logf("appending result %s", res.Object)
+						results = append(results, res)
+					}
 				}
-
-				reverseExpandErrCh <- nil
-			}()
-
-			select {
-			case <-timeoutCtx.Done():
-				require.FailNow("timed out waiting for response")
-			case err := <-reverseExpandErrCh:
-				require.ErrorIs(err, test.expectedError)
-			}
-
-			if test.expectedError == nil {
-				require.ElementsMatch(test.expectedResult, results)
-				require.Equal(test.expectedDSQueryCount, *resolutionMetadata.QueryCount)
 			}
 		})
 	}

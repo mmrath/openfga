@@ -5,10 +5,11 @@ import (
 	"errors"
 	"fmt"
 
-	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+
+	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 
 	"github.com/openfga/openfga/internal/server/config"
 	"github.com/openfga/openfga/internal/validation"
@@ -67,7 +68,13 @@ func (c *WriteCommand) Execute(ctx context.Context, req *openfgav1.WriteRequest)
 		req.GetWrites().GetTupleKeys(),
 	)
 	if err != nil {
-		return nil, handleError(err)
+		if errors.Is(err, storage.ErrTransactionalWriteFailed) {
+			return nil, status.Error(codes.Aborted, err.Error())
+		}
+		if errors.Is(err, storage.ErrInvalidWriteInput) {
+			return nil, serverErrors.WriteFailedDueToInvalidInput(err)
+		}
+		return nil, serverErrors.HandleError("", err)
 	}
 
 	return &openfgav1.WriteResponse{}, nil
@@ -83,7 +90,7 @@ func (c *WriteCommand) validateWriteRequest(ctx context.Context, req *openfgav1.
 	writes := req.GetWrites().GetTupleKeys()
 
 	if len(deletes) == 0 && len(writes) == 0 {
-		return serverErrors.InvalidWriteInput
+		return serverErrors.ErrInvalidWriteInput
 	}
 
 	if len(writes) > 0 {
@@ -92,19 +99,27 @@ func (c *WriteCommand) validateWriteRequest(ctx context.Context, req *openfgav1.
 			if errors.Is(err, storage.ErrNotFound) {
 				return serverErrors.AuthorizationModelNotFound(modelID)
 			}
-			return err
+			return serverErrors.HandleError("", err)
 		}
 
 		if !typesystem.IsSchemaVersionSupported(authModel.GetSchemaVersion()) {
 			return serverErrors.ValidationError(typesystem.ErrInvalidSchemaVersion)
 		}
 
-		typesys := typesystem.New(authModel)
+		typesys, err := typesystem.New(authModel)
+		if err != nil {
+			return err
+		}
 
 		for _, tk := range writes {
-			err := validation.ValidateTuple(typesys, tk)
+			err := validation.ValidateTupleForWrite(typesys, tk)
 			if err != nil {
 				return serverErrors.ValidationError(err)
+			}
+
+			err = c.validateNotImplicit(tk)
+			if err != nil {
+				return err
 			}
 
 			contextSize := proto.Size(tk.GetCondition().GetContext())
@@ -118,6 +133,7 @@ func (c *WriteCommand) validateWriteRequest(ctx context.Context, req *openfgav1.
 	}
 
 	for _, tk := range deletes {
+		// TODO validate relation format and object format
 		if ok := tupleUtils.IsValidUser(tk.GetUser()); !ok {
 			return serverErrors.ValidationError(
 				&tupleUtils.InvalidTupleError{
@@ -164,12 +180,16 @@ func (c *WriteCommand) validateNoDuplicatesAndCorrectSize(
 	return nil
 }
 
-func handleError(err error) error {
-	if errors.Is(err, storage.ErrTransactionalWriteFailed) {
-		return status.Error(codes.Aborted, err.Error())
-	} else if errors.Is(err, storage.ErrInvalidWriteInput) {
-		return serverErrors.WriteFailedDueToInvalidInput(err)
+// validateNotImplicit ensures the tuple to be written (not deleted) is not of the form `object:id # relation @ object:id#relation`.
+func (c *WriteCommand) validateNotImplicit(
+	tk *openfgav1.TupleKey,
+) error {
+	userObject, userRelation := tupleUtils.SplitObjectRelation(tk.GetUser())
+	if tk.GetRelation() == userRelation && tk.GetObject() == userObject {
+		return serverErrors.ValidationError(&tupleUtils.InvalidTupleError{
+			Cause:    fmt.Errorf("cannot write a tuple that is implicit"),
+			TupleKey: tk,
+		})
 	}
-
-	return serverErrors.HandleError("", err)
+	return nil
 }

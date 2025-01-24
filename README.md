@@ -1,25 +1,25 @@
 # OpenFGA
+
 [![Go Reference](https://pkg.go.dev/badge/github.com/openfga/openfga.svg)](https://pkg.go.dev/github.com/openfga/openfga)
 ![GitHub release (latest SemVer)](https://img.shields.io/github/v/release/openfga/openfga?sort=semver&color=green)
-[![Container Image](https://img.shields.io/github/v/release/openfga/openfga?color=blueviolet&label=container&logo=docker "Container Image")](https://hub.docker.com/r/openfga/openfga/tags)
+[![Docker Pulls](https://img.shields.io/docker/pulls/openfga/openfga)](https://hub.docker.com/r/openfga/openfga/tags)
 [![Codecov](https://img.shields.io/codecov/c/github/openfga/openfga)](https://app.codecov.io/gh/openfga/openfga)
 [![Go Report](https://goreportcard.com/badge/github.com/openfga/openfga)](https://goreportcard.com/report/github.com/openfga/openfga)
 [![CII Best Practices](https://bestpractices.coreinfrastructure.org/projects/6374/badge)](https://bestpractices.coreinfrastructure.org/projects/6374)
-[![Discord Server](https://img.shields.io/discord/759188666072825867?color=7289da&logo=discord "Discord Server")](https://discord.gg/8naAwJfWN6)
+[![Join our community](https://img.shields.io/badge/slack-cncf_%23openfga-40abb8.svg?logo=slack)](https://openfga.dev/community)
 [![Twitter](https://img.shields.io/twitter/follow/openfga?color=%23179CF0&logo=twitter&style=flat-square "@openfga on Twitter")](https://twitter.com/openfga)
 [![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fopenfga%2Fopenfga.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Fopenfga%2Fopenfga?ref=badge_shield)
 [![Artifact HUB](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/openfga)](https://artifacthub.io/packages/helm/openfga/openfga)
-[![OpenSSF
-Scorecard](https://api.securityscorecards.dev/projects/github.com/openfga/openfga/badge)](https://api.securityscorecards.dev/projects/github.com/openfga/openfga)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/openfga/openfga/badge)](https://securityscorecards.dev/viewer/?uri=github.com/openfga/openfga)
 [![SLSA 3](https://slsa.dev/images/gh-badge-level3.svg)](https://slsa.dev)
 
 A high-performance and flexible authorization/permission engine built for developers and inspired by [Google Zanzibar](https://research.google/pubs/pub48190/).
 
 OpenFGA is designed to make it easy for developers to model their application permissions and add and integrate fine-grained authorization into their applications.
 
-It allows in-memory data storage for quick development, as well as pluggable database modules. It currently supports PostgreSQL 14 and MySQL 8.
+It allows in-memory data storage for quick development, as well as pluggable database modules. It currently supports PostgreSQL 14, MySQL 8 and SQLite (currently in beta).
 
-It offers an [HTTP API](https://openfga.dev/api/service) and a [gRPC API](https://buf.build/openfga/api/file/main:openfga/v1/openfga_service.proto). It has SDKs for [Node.js/JavaScript](https://www.npmjs.com/package/@openfga/sdk), [GoLang](https://github.com/openfga/go-sdk), [Python](https://github.com/openfga/python-sdk) and [.NET](https://www.nuget.org/packages/OpenFga.Sdk). Look in our [Community section](https://github.com/openfga/community#community-projects) for third-party SDKs and tools.
+It offers an [HTTP API](https://openfga.dev/api/service) and a [gRPC API](https://buf.build/openfga/api/file/main:openfga/v1/openfga_service.proto). It has SDKs for [Java](https://central.sonatype.com/artifact/dev.openfga/openfga-sdk), [Node.js/JavaScript](https://www.npmjs.com/package/@openfga/sdk), [GoLang](https://github.com/openfga/go-sdk), [Python](https://github.com/openfga/python-sdk) and [.NET](https://www.nuget.org/packages/OpenFga.Sdk). Look in our [Community section](https://github.com/openfga/community#community-projects) for third-party SDKs and tools. It can also be used [as a library](https://pkg.go.dev/github.com/openfga/openfga/pkg/server#example-NewServerWithOpts).
 
 ## Getting Started
 
@@ -35,10 +35,13 @@ The following section aims to help you get started quickly. Please look at our o
 
 OpenFGA is available on [Dockerhub](https://hub.docker.com/r/openfga/openfga), so you can quickly start it using the in-memory datastore by running the following commands:
 
-```bash
+```shell
 docker pull openfga/openfga
 docker run -p 8080:8080 -p 3000:3000 openfga/openfga run
 ```
+
+> [!TIP]
+> The `OPENFGA_HTTP_ADDR` environment variable can used to configure the address at which [the playground](https://openfga.dev/docs/getting-started/setup-openfga/playground) expects the OpenFGA server to be. For example, `docker run -e OPENFGA_PLAYGROUND_ENABLED=true -e OPENFGA_HTTP_ADDR=0.0.0.0:4000 -p 4000:4000 -p 3000:3000 openfga/openfga run` will start the OpenFGA server on port 4000, and configure the playground too.
 
 #### Docker Compose
 
@@ -46,21 +49,21 @@ docker run -p 8080:8080 -p 3000:3000 openfga/openfga run
 
 1. First, either clone this repo or curl the `docker-compose.yaml` file with the following command:
 
-   ```bash
-   curl -LO https://openfga.dev/docker-compose.yaml
-   ```
+    ```shell
+    curl -LO https://openfga.dev/docker-compose.yaml
+    ```
 
 2. Then, run the following command:
 
-   ```bash
-   docker compose up
-   ```
+    ```shell
+    docker compose up
+    ```
 
 ### Package Managers
 
 If you are a [Homebrew](https://brew.sh/) user, you can install [OpenFGA](https://formulae.brew.sh/formula/openfga) with the following command:
 
-```bash
+```shell
 brew install openfga
 ```
 
@@ -69,7 +72,7 @@ brew install openfga
 Download your platform's [latest release](https://github.com/openfga/openfga/releases/latest) and extract it. Then run the binary
 with the command:
 
-```bash
+```shell
 ./openfga run
 ```
 
@@ -79,27 +82,27 @@ There are two recommended options for building OpenFGA from source code:
 
 #### Building from source with `go install`
 
-> Make sure you have Go 1.20 or later installed. See the [Go downloads](https://go.dev/dl/) page.
+> Make sure you have the latest version of Go installed. See the [Go downloads](https://go.dev/dl/) page.
 
 You can install from source using Go modules:
 
 1. First, make sure `$GOBIN` is on your shell `$PATH`:
 
-   ```bash
-   export PATH=$PATH:$(go env GOBIN)
-   ```
+    ```shell
+    export PATH=$PATH:$(go env GOBIN)
+    ```
 
 2. Then use the install command:
 
-   ```bash
-   go install github.com/openfga/openfga/cmd/openfga
-   ```
+    ```shell
+    go install github.com/openfga/openfga/cmd/openfga
+    ```
 
 3. Run the server with:
 
-   ```bash
-   ./openfga run
-   ```
+    ```shell
+    ./openfga run
+    ```
 
 #### Building from source with `go build`
 
@@ -107,27 +110,27 @@ Alternatively you can build OpenFGA by cloning the project from this Github repo
 
 1. Clone the repo to a local directory, and navigate to that directory:
 
-   ```bash
-   git clone https://github.com/openfga/openfga.git && cd openfga
-   ```
+    ```shell
+    git clone https://github.com/openfga/openfga.git && cd openfga
+    ```
 
 2. Then use the build command:
 
-   ```bash
-   go build -o ./openfga ./cmd/openfga
-   ```
+    ```shell
+    go build -o ./openfga ./cmd/openfga
+    ```
 
 3. Run the server with:
 
-   ```bash
-   ./openfga run
-   ```
+    ```shell
+    ./openfga run
+    ```
 
 ### Verifying the Installation
 
 Now that you have [Set up and Installed](#setup-and-installation) OpenFGA, you can test your installation by [creating an OpenFGA Store](https://openfga.dev/docs/getting-started/create-store).
 
-```bash
+```shell
 curl -X POST 'localhost:8080/stores' \
 --header 'Content-Type: application/json' \
 --data-raw '{
@@ -151,21 +154,21 @@ The Playground facilitates rapid development by allowing you to visualize and mo
 
 To run OpenFGA with the Playground disabled, provide the `--playground-enabled=false` flag.
 
-```
+```shell
 ./openfga run --playground-enabled=false
 ```
 Once OpenFGA is running, by default, the Playground can be accessed at [http://localhost:3000/playground](http://localhost:3000/playground).
 
 In the event that a port other than the default port is required, the `--playground-port` flag can be set to change it. For example,
 
-```sh
+```shell
 ./openfga run --playground-enabled --playground-port 3001
 ```
 
 ## Profiler (pprof)
 Profiling through [pprof](https://github.com/google/pprof) can be enabled on the OpenFGA server by providing the `--profiler-enabled` flag.
 
-```sh
+```shell
 ./openfga run --profiler-enabled
 ```
 
@@ -173,13 +176,13 @@ This will start serving profiling data on port `3001`. You can see that data by 
 
 If you need to serve the profiler on a different address, you can do so by specifying the `--profiler-addr` flag. For example,
 
-```sh
+```shell
 ./openfga run --profiler-enabled --profiler-addr :3002
 ```
 
 Once the OpenFGA server is running, in another window you can run the following command to generate a compressed CPU profile:
 
-```sh
+```shell
 go tool pprof -proto -seconds 60 http://localhost:3001/debug/pprof/profile
 # will collect data for 60 seconds and generate a file like pprof.samples.cpu.001.pb.gz
 ```
@@ -205,26 +208,24 @@ Don't hesitate to browse the official [Documentation](https://openfga.dev/), [AP
 ### MySQL Storage engine
 The MySQL storage engine has a lower length limit for some properties of a tuple compared with other storage backends. For more information see [the docs](https://openfga.dev/docs/getting-started/setup-openfga/docker#configuring-data-storage).
 
+OpenFGA's MySQL Storage Adapter was contributed to OpenFGA by [@twintag](https://github.com/twintag). Thanks!
+
 ## Production Readiness
 
-The core [OpenFGA](https://github.com/openfga/openfga) service has been in use by [Auth0 FGA](https://fga.dev) in production since December 2021.
+The core [OpenFGA](https://github.com/openfga/openfga) service has been in use by [Okta FGA](https://fga.dev) in production since December 2021.
 
-OpenFGA's Memory Storage Adapter was built for development purposes only and is not recommended for a production environment, because it is not designed for scalable queries and has no support for persistence.
-
-OpenFGA's PostgreSQL Storage Adapter was purposely built for OpenFGA. Auth0 is not using it in a production environment.
-
-OpenFGA's MySQL Storage Adapter was contributed to OpenFGA by [@twintag](https://github.com/twintag), who are using it in a production environment. Auth0 is not using it in a production environment.
-
-The OpenFGA team will do its best to address all production issues with high priority.
+OpenFGA's Memory Storage Adapter was built for development purposes only, is not optimized for performance, and is not recommended for a production environment.
 
 You can learn about more organizations using OpenFGA in production [here](https://github.com/openfga/community/blob/main/ADOPTERS.md). If your organization is using OpenFGA in production please consider adding it to the list.
+
+The OpenFGA team will do its best to address all production issues with high priority.
 
 ## Contributing
 
 See [CONTRIBUTING](https://github.com/openfga/.github/blob/main/CONTRIBUTING.md).
 
 [doc]: https://openfga.dev/docs
-[config-doc]: https://openfga.dev/docs/getting-started/setup-openfga
+[config-doc]: https://openfga.dev/docs/getting-started/setup-openfga/configure-openfga
 [api]: https://openfga.dev/api/service
 [prod-checklist]: https://openfga.dev/docs/getting-started/running-in-production
 

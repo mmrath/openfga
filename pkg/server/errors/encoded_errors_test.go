@@ -4,10 +4,11 @@ import (
 	"net/http"
 	"testing"
 
-	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 )
 
 func TestEncodedError(t *testing.T) {
@@ -101,6 +102,14 @@ func TestEncodedError(t *testing.T) {
 			expectedCodeString:     "validation_error",
 		},
 		{
+			_name:                  "throttle_error",
+			errorCode:              int32(openfgav1.UnprocessableContentErrorCode_throttled_timeout_error),
+			message:                "error message",
+			expectedHTTPStatusCode: http.StatusUnprocessableEntity,
+			expectedCode:           3500,
+			expectedCodeString:     "throttled_timeout_error",
+		},
+		{
 			_name:                  "internal_error",
 			errorCode:              int32(openfgav1.InternalErrorCode_internal_error),
 			message:                "error message",
@@ -148,7 +157,7 @@ func TestConvertToEncodedErrorCode(t *testing.T) {
 		{
 			_name:             "cancelled",
 			status:            status.New(codes.Canceled, "other error"),
-			expectedErrorCode: int32(openfgav1.InternalErrorCode_cancelled),
+			expectedErrorCode: int32(openfgav1.ErrorCode_cancelled),
 		},
 		{
 			_name:             "unknown",
