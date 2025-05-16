@@ -468,7 +468,6 @@ func TestListObjects(t *testing.T, ds storage.OpenFGADatastore) {
 	}
 
 	for _, test := range testCases {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			ctx := context.Background()
@@ -507,9 +506,7 @@ func TestListObjects(t *testing.T, ds storage.OpenFGADatastore) {
 				opts = append(opts, commands.WithListObjectsDeadline(test.listObjectsDeadline))
 			}
 
-			localCheckOpts := []graph.LocalCheckerOption{
-				graph.WithResolveNodeBreadthLimit(100),
-			}
+			var localCheckOpts []graph.LocalCheckerOption
 			cacheOpts := []graph.CachedCheckResolverOpt{
 				graph.WithCacheTTL(10 * time.Second),
 			}
