@@ -27,6 +27,7 @@ import (
 	"github.com/openfga/openfga/internal/shared"
 	"github.com/openfga/openfga/internal/throttler"
 	"github.com/openfga/openfga/internal/utils"
+	"github.com/openfga/openfga/internal/utils/apimethod"
 	"github.com/openfga/openfga/pkg/authclaims"
 	"github.com/openfga/openfga/pkg/encoder"
 	"github.com/openfga/openfga/pkg/gateway"
@@ -211,6 +212,13 @@ type Server struct {
 
 	listObjectsDispatchThrottler throttler.Throttler
 	listUsersDispatchThrottler   throttler.Throttler
+
+	checkDatastoreThrottleThreshold       int
+	checkDatastoreThrottleDuration        time.Duration
+	listObjectsDatastoreThrottleThreshold int
+	listObjectsDatastoreThrottleDuration  time.Duration
+	listUsersDatastoreThrottleThreshold   int
+	listUsersDatastoreThrottleDuration    time.Duration
 
 	authorizer authz.AuthorizerInterface
 
@@ -681,6 +689,27 @@ func WithMaxChecksPerBatchCheck(maxChecks uint32) OpenFGAServiceV1Option {
 	}
 }
 
+func WithCheckDatabaseThrottle(threshold int, duration time.Duration) OpenFGAServiceV1Option {
+	return func(s *Server) {
+		s.checkDatastoreThrottleThreshold = threshold
+		s.checkDatastoreThrottleDuration = duration
+	}
+}
+
+func WithListObjectsDatabaseThrottle(threshold int, duration time.Duration) OpenFGAServiceV1Option {
+	return func(s *Server) {
+		s.listObjectsDatastoreThrottleThreshold = threshold
+		s.listObjectsDatastoreThrottleDuration = duration
+	}
+}
+
+func WithListUsersDatabaseThrottle(threshold int, duration time.Duration) OpenFGAServiceV1Option {
+	return func(s *Server) {
+		s.listUsersDatastoreThrottleThreshold = threshold
+		s.listUsersDatastoreThrottleDuration = duration
+	}
+}
+
 // WithShadowCheckResolverEnabled turns of shadow check resolver to allow result comparison.
 // Note that ShadowCheckResolver is a temporary feature and may be removed in future release.
 func WithShadowCheckResolverEnabled(enabled bool) OpenFGAServiceV1Option {
@@ -722,6 +751,26 @@ func WithShadowListObjectsCheckResolverTimeout(threshold time.Duration) OpenFGAS
 func WithShadowListObjectsCheckResolverSamplePercentage(rate int) OpenFGAServiceV1Option {
 	return func(s *Server) {
 		s.shadowListObjectsCheckResolverSamplePercentage = rate
+	}
+}
+
+// WithSharedIteratorEnabled enables iterator to be shared across different consumer.
+func WithSharedIteratorEnabled(enabled bool) OpenFGAServiceV1Option {
+	return func(s *Server) {
+		s.cacheSettings.SharedIteratorEnabled = enabled
+	}
+}
+
+// WithSharedIteratorLimit sets the number of items that can be shared.
+func WithSharedIteratorLimit(limit uint32) OpenFGAServiceV1Option {
+	return func(s *Server) {
+		s.cacheSettings.SharedIteratorLimit = limit
+	}
+}
+
+func WithSharedIteratorTTL(ttl time.Duration) OpenFGAServiceV1Option {
+	return func(s *Server) {
+		s.cacheSettings.SharedIteratorTTL = ttl
 	}
 }
 
@@ -1022,7 +1071,7 @@ func (s *Server) validateAccessControlEnabled() error {
 }
 
 // checkAuthz checks the authorization for calling an API method.
-func (s *Server) checkAuthz(ctx context.Context, storeID, apiMethod string, modules ...string) error {
+func (s *Server) checkAuthz(ctx context.Context, storeID string, apiMethod apimethod.APIMethod, modules ...string) error {
 	if authclaims.SkipAuthzCheckFromContext(ctx) {
 		return nil
 	}
@@ -1085,7 +1134,7 @@ func (s *Server) checkWriteAuthz(ctx context.Context, req *openfgav1.WriteReques
 		return authz.ErrUnauthorizedResponse
 	}
 
-	return s.checkAuthz(ctx, req.GetStoreId(), authz.Write, modules...)
+	return s.checkAuthz(ctx, req.GetStoreId(), apimethod.Write, modules...)
 }
 
 func (s *Server) emitCheckDurationMetric(checkMetadata graph.ResolveCheckResponseMetadata, caller string) {

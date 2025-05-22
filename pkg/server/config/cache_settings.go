@@ -1,6 +1,8 @@
 package config
 
-import "time"
+import (
+	"time"
+)
 
 type CacheSettings struct {
 	CheckCacheLimit                    uint32
@@ -14,6 +16,9 @@ type CacheSettings struct {
 	ListObjectsIteratorCacheEnabled    bool
 	ListObjectsIteratorCacheMaxResults uint32
 	ListObjectsIteratorCacheTTL        time.Duration
+	SharedIteratorEnabled              bool
+	SharedIteratorLimit                uint32
+	SharedIteratorTTL                  time.Duration
 }
 
 func NewDefaultCacheSettings() CacheSettings {
@@ -29,6 +34,9 @@ func NewDefaultCacheSettings() CacheSettings {
 		ListObjectsIteratorCacheEnabled:    DefaultListObjectsIteratorCacheEnabled,
 		ListObjectsIteratorCacheMaxResults: DefaultListObjectsIteratorCacheMaxResults,
 		ListObjectsIteratorCacheTTL:        DefaultListObjectsIteratorCacheTTL,
+		SharedIteratorEnabled:              DefaultSharedIteratorEnabled,
+		SharedIteratorLimit:                DefaultSharedIteratorLimit,
+		SharedIteratorTTL:                  DefaultSharedIteratorTTL,
 	}
 }
 
