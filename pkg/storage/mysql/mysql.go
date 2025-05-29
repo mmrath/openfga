@@ -161,11 +161,11 @@ func (s *Datastore) ReadPage(ctx context.Context, store string, tupleKey *openfg
 	}
 	defer iter.Stop()
 
-	return iter.ToArray(options.Pagination)
+	return iter.ToArray(ctx, options.Pagination)
 }
 
 func (s *Datastore) read(ctx context.Context, store string, tupleKey *openfgav1.TupleKey, options *storage.ReadPageOptions) (*sqlcommon.SQLTupleIterator, error) {
-	ctx, span := startTrace(ctx, "read")
+	_, span := startTrace(ctx, "read")
 	defer span.End()
 
 	sb := s.stbl.
@@ -201,12 +201,7 @@ func (s *Datastore) read(ctx context.Context, store string, tupleKey *openfgav1.
 		sb = sb.Limit(uint64(options.Pagination.PageSize + 1)) // + 1 is used to determine whether to return a continuation token.
 	}
 
-	rows, err := sb.QueryContext(ctx)
-	if err != nil {
-		return nil, HandleSQLError(err)
-	}
-
-	return sqlcommon.NewSQLTupleIterator(rows), nil
+	return sqlcommon.NewSQLTupleIterator(sb, HandleSQLError), nil
 }
 
 // Write see [storage.RelationshipTupleWriter].Write.
@@ -284,7 +279,7 @@ func (s *Datastore) ReadUsersetTuples(
 	filter storage.ReadUsersetTuplesFilter,
 	_ storage.ReadUsersetTuplesOptions,
 ) (storage.TupleIterator, error) {
-	ctx, span := startTrace(ctx, "ReadUsersetTuples")
+	_, span := startTrace(ctx, "ReadUsersetTuples")
 	defer span.End()
 
 	sb := s.stbl.
@@ -323,12 +318,8 @@ func (s *Datastore) ReadUsersetTuples(
 		}
 		sb = sb.Where(orConditions)
 	}
-	rows, err := sb.QueryContext(ctx)
-	if err != nil {
-		return nil, HandleSQLError(err)
-	}
 
-	return sqlcommon.NewSQLTupleIterator(rows), nil
+	return sqlcommon.NewSQLTupleIterator(sb, HandleSQLError), nil
 }
 
 // ReadStartingWithUser see [storage.RelationshipTupleReader].ReadStartingWithUser.
@@ -338,7 +329,7 @@ func (s *Datastore) ReadStartingWithUser(
 	filter storage.ReadStartingWithUserFilter,
 	_ storage.ReadStartingWithUserOptions,
 ) (storage.TupleIterator, error) {
-	ctx, span := startTrace(ctx, "ReadStartingWithUser")
+	_, span := startTrace(ctx, "ReadStartingWithUser")
 	defer span.End()
 
 	var targetUsersArg []string
@@ -368,12 +359,7 @@ func (s *Datastore) ReadStartingWithUser(
 		builder = builder.Where(sq.Eq{"object_id": filter.ObjectIDs.Values()})
 	}
 
-	rows, err := builder.QueryContext(ctx)
-	if err != nil {
-		return nil, HandleSQLError(err)
-	}
-
-	return sqlcommon.NewSQLTupleIterator(rows), nil
+	return sqlcommon.NewSQLTupleIterator(builder, HandleSQLError), nil
 }
 
 // MaxTuplesPerWrite see [storage.RelationshipTupleWriter].MaxTuplesPerWrite.
@@ -801,7 +787,8 @@ func HandleSQLError(err error, args ...interface{}) error {
 		return storage.ErrNotFound
 	}
 
-	if me, ok := err.(*mysql.MySQLError); ok && me.Number == 1062 {
+	var me *mysql.MySQLError
+	if errors.As(err, &me) && me.Number == 1062 {
 		if len(args) > 0 {
 			if tk, ok := args[0].(*openfgav1.TupleKey); ok {
 				return storage.InvalidWriteInputError(tk, openfgav1.TupleOperation_TUPLE_OPERATION_WRITE)
