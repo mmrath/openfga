@@ -15,7 +15,7 @@ import (
 
 	"github.com/openfga/openfga/internal/checkutil"
 	"github.com/openfga/openfga/internal/concurrency"
-	"github.com/openfga/openfga/internal/graph/iterator"
+	"github.com/openfga/openfga/internal/iterator"
 	"github.com/openfga/openfga/internal/validation"
 	"github.com/openfga/openfga/pkg/storage"
 	"github.com/openfga/openfga/pkg/tuple"
@@ -428,7 +428,6 @@ func fastPathRewrite(
 // From the perspective of the model, the left hand side of a TTU is the computed relationship being expanded.
 func (c *LocalChecker) resolveFastPath(ctx context.Context, leftChans []chan *iterator.Msg, iter storage.TupleMapper) (*ResolveCheckResponse, error) {
 	ctx, span := tracer.Start(ctx, "resolveFastPath", trace.WithAttributes(
-		attribute.Int("sources", len(leftChans)),
 		attribute.Bool("allowed", false),
 	))
 	defer span.End()
@@ -528,7 +527,7 @@ ConsumerLoop:
 	return res, lastErr
 }
 
-func constructLeftChannels(
+func produceLeftChannels(
 	ctx context.Context,
 	req *ResolveCheckRequest,
 	relationReferences []*openfgav1.RelationReference,
@@ -536,7 +535,6 @@ func constructLeftChannels(
 	concurrencyLimit int,
 ) ([]chan *iterator.Msg, error) {
 	typesys, _ := typesystem.TypesystemFromContext(ctx)
-
 	leftChans := make([]chan *iterator.Msg, 0, len(relationReferences))
 	for _, parentType := range relationReferences {
 		relation := relationFunc(parentType)
@@ -575,7 +573,7 @@ func (c *LocalChecker) checkUsersetFastPathV2(ctx context.Context, req *ResolveC
 	defer cancel()
 	directlyRelatedUsersetTypes, _ := typesys.DirectlyRelatedUsersets(objectType, req.GetTupleKey().GetRelation())
 
-	leftChans, err := constructLeftChannels(cancellableCtx, req, directlyRelatedUsersetTypes, checkutil.BuildUsersetV2RelationFunc(), c.concurrencyLimit)
+	leftChans, err := produceLeftChannels(cancellableCtx, req, directlyRelatedUsersetTypes, checkutil.BuildUsersetV2RelationFunc(), c.concurrencyLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -585,7 +583,6 @@ func (c *LocalChecker) checkUsersetFastPathV2(ctx context.Context, req *ResolveC
 			Allowed: false,
 		}, nil
 	}
-
 	return c.resolveFastPath(ctx, leftChans, storage.WrapIterator(storage.UsersetKind, iter))
 }
 
@@ -605,7 +602,7 @@ func (c *LocalChecker) checkTTUFastPathV2(ctx context.Context, req *ResolveCheck
 	cancellableCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	leftChans, err := constructLeftChannels(cancellableCtx, req, possibleParents, checkutil.BuildTTUV2RelationFunc(computedRelation), c.concurrencyLimit)
+	leftChans, err := produceLeftChannels(cancellableCtx, req, possibleParents, checkutil.BuildTTUV2RelationFunc(computedRelation), c.concurrencyLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -619,7 +616,6 @@ func (c *LocalChecker) checkTTUFastPathV2(ctx context.Context, req *ResolveCheck
 	return c.resolveFastPath(ctx, leftChans, storage.WrapIterator(storage.TTUKind, iter))
 }
 
-// NOTE: Can we make this generic and move it to concurrency pkg?
 func fanInIteratorChannels(ctx context.Context, chans []chan *iterator.Msg, concurrencyLimit int) chan *iterator.Msg {
 	limit := len(chans)
 
@@ -749,6 +745,7 @@ ConsumerLoop:
 				}
 
 				if usersetFromUser.Contains(t) {
+					msg.Iter.Stop()
 					concurrency.TrySendThroughChannel(ctx, checkOutcome{resp: &ResolveCheckResponse{Allowed: true}}, checkOutcomeChan)
 					close(checkOutcomeChan)
 					return

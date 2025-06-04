@@ -9,7 +9,7 @@ import (
 
 	"github.com/openfga/openfga/internal/checkutil"
 	"github.com/openfga/openfga/internal/concurrency"
-	"github.com/openfga/openfga/internal/graph/iterator"
+	"github.com/openfga/openfga/internal/iterator"
 	"github.com/openfga/openfga/pkg/storage"
 	"github.com/openfga/openfga/pkg/tuple"
 	"github.com/openfga/openfga/pkg/typesystem"
@@ -92,7 +92,7 @@ func (c *recursiveTTUObjectProvider) Begin(ctx context.Context, req *ResolveChec
 		return nil, err
 	}
 
-	leftChannels, err := constructLeftChannels(ctx, req, possibleParents, checkutil.BuildTTUV2RelationFunc(c.computedRelation), c.concurrencyLimit)
+	leftChannels, err := produceLeftChannels(ctx, req, possibleParents, checkutil.BuildTTUV2RelationFunc(c.computedRelation), c.concurrencyLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +132,8 @@ func (c *recursiveUsersetObjectProvider) End() {
 func (c *recursiveUsersetObjectProvider) Begin(ctx context.Context, req *ResolveCheckRequest) (<-chan usersetMessage, error) {
 	objectType := tuple.GetType(req.GetTupleKey().GetObject())
 	reference := []*openfgav1.RelationReference{{Type: objectType, RelationOrWildcard: &openfgav1.RelationReference_Relation{Relation: req.GetTupleKey().GetRelation()}}}
-	leftChans, err := constructLeftChannels(ctx, req, reference, checkutil.BuildUsersetV2RelationFunc(), c.concurrencyLimit)
+
+	leftChans, err := produceLeftChannels(ctx, req, reference, checkutil.BuildUsersetV2RelationFunc(), c.concurrencyLimit)
 	if err != nil {
 		return nil, err
 	}

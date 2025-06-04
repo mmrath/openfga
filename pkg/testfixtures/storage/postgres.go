@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	postgresImage = "postgres:14"
+	postgresImage = "postgres:17"
 )
 
 type postgresTestContainer struct {
@@ -138,7 +138,9 @@ AllImages:
 
 	db, err := goose.OpenDBWithDriver("pgx", uri)
 	require.NoError(t, err)
-	defer db.Close()
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
 
 	backoffPolicy := backoff.NewExponentialBackOff()
 	backoffPolicy.MaxElapsedTime = 30 * time.Second
