@@ -44,6 +44,7 @@ type Datastore struct {
 	dbStatsCollector       prometheus.Collector
 	maxTuplesPerWriteField int
 	maxTypesPerModelField  int
+	versionReady           bool
 }
 
 // Ensures that SQLite implements the OpenFGADatastore interface.
@@ -122,6 +123,7 @@ func New(uri string, cfg *sqlcommon.Config) (*Datastore, error) {
 		dbStatsCollector:       collector,
 		maxTuplesPerWriteField: cfg.MaxTuplesPerWriteField,
 		maxTypesPerModelField:  cfg.MaxTypesPerModelField,
+		versionReady:           false,
 	}, nil
 }
 
@@ -207,7 +209,7 @@ func (s *Datastore) read(ctx context.Context, store string, tupleKey *openfgav1.
 		return nil, HandleSQLError(err)
 	}
 
-	return NewSQLTupleIterator(rows), nil
+	return NewSQLTupleIterator(rows, HandleSQLError), nil
 }
 
 // Write see [storage.RelationshipTupleWriter].Write.
@@ -518,7 +520,7 @@ func (s *Datastore) ReadUsersetTuples(
 		return nil, HandleSQLError(err)
 	}
 
-	return NewSQLTupleIterator(rows), nil
+	return NewSQLTupleIterator(rows, HandleSQLError), nil
 }
 
 // ReadStartingWithUser see [storage.RelationshipTupleReader].ReadStartingWithUser.
@@ -567,7 +569,7 @@ func (s *Datastore) ReadStartingWithUser(
 		return nil, HandleSQLError(err)
 	}
 
-	return NewSQLTupleIterator(rows), nil
+	return NewSQLTupleIterator(rows, HandleSQLError), nil
 }
 
 // MaxTuplesPerWrite see [storage.RelationshipTupleWriter].MaxTuplesPerWrite.
@@ -1036,7 +1038,12 @@ func (s *Datastore) ReadChanges(ctx context.Context, store string, filter storag
 
 // IsReady see [sqlcommon.IsReady].
 func (s *Datastore) IsReady(ctx context.Context) (storage.ReadinessStatus, error) {
-	return sqlcommon.IsReady(ctx, s.db)
+	versionReady, err := sqlcommon.IsReady(ctx, s.versionReady, s.db)
+	if err != nil {
+		return versionReady, err
+	}
+	s.versionReady = versionReady.IsReady
+	return versionReady, nil
 }
 
 // HandleSQLError processes an SQL error and converts it into a more

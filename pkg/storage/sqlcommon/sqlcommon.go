@@ -12,6 +12,8 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/oklog/ulid/v2"
 	"github.com/pressly/goose/v3"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 
@@ -24,11 +26,16 @@ import (
 	tupleUtils "github.com/openfga/openfga/pkg/tuple"
 )
 
+var tracer = otel.Tracer("pkg/storage/sqlcommon")
+
 // Config defines the configuration parameters
 // for setting up and managing a sql connection.
 type Config struct {
+	SecondaryURI           string
 	Username               string
 	Password               string
+	SecondaryUsername      string
+	SecondaryPassword      string
 	Logger                 logger.Logger
 	MaxTuplesPerWriteField int
 	MaxTypesPerModelField  int
@@ -45,6 +52,13 @@ type Config struct {
 // used for configuring a Config object.
 type DatastoreOption func(*Config)
 
+// WithSecondaryURI returns a DatastoreOption that sets the secondary URI in the Config.
+func WithSecondaryURI(uri string) DatastoreOption {
+	return func(config *Config) {
+		config.SecondaryURI = uri
+	}
+}
+
 // WithUsername returns a DatastoreOption that sets the username in the Config.
 func WithUsername(username string) DatastoreOption {
 	return func(config *Config) {
@@ -56,6 +70,20 @@ func WithUsername(username string) DatastoreOption {
 func WithPassword(password string) DatastoreOption {
 	return func(config *Config) {
 		config.Password = password
+	}
+}
+
+// WithSecondaryUsername returns a DatastoreOption that sets the secondary username in the Config.
+func WithSecondaryUsername(username string) DatastoreOption {
+	return func(config *Config) {
+		config.SecondaryUsername = username
+	}
+}
+
+// WithSecondaryPassword returns a DatastoreOption that sets the secondary password in the Config.
+func WithSecondaryPassword(password string) DatastoreOption {
+	return func(config *Config) {
+		config.SecondaryPassword = password
 	}
 }
 
@@ -187,7 +215,9 @@ func (s *SQLContinuationTokenSerializer) Deserialize(continuationToken string) (
 // SQLTupleIterator is a struct that implements the storage.TupleIterator
 // interface for iterating over tuples fetched from a SQL database.
 type SQLTupleIterator struct {
-	rows *sql.Rows // GUARDED_BY(mu)
+	rows           *sql.Rows // GUARDED_BY(mu)
+	sb             sq.SelectBuilder
+	handleSQLError errorHandlerFn
 
 	// firstRow is used as a temporary storage place if head is called.
 	// If firstRow is nil and Head is called, rows.Next() will return the first item and advance
@@ -201,16 +231,36 @@ type SQLTupleIterator struct {
 var _ storage.TupleIterator = (*SQLTupleIterator)(nil)
 
 // NewSQLTupleIterator returns a SQL tuple iterator.
-func NewSQLTupleIterator(rows *sql.Rows) *SQLTupleIterator {
+func NewSQLTupleIterator(sb sq.SelectBuilder, errHandler errorHandlerFn) *SQLTupleIterator {
 	return &SQLTupleIterator{
-		rows:     rows,
-		firstRow: nil,
-		mu:       sync.Mutex{},
+		sb:             sb,
+		rows:           nil,
+		handleSQLError: errHandler,
+		firstRow:       nil,
+		mu:             sync.Mutex{},
 	}
 }
 
-func (t *SQLTupleIterator) next() (*storage.TupleRecord, error) {
+func (t *SQLTupleIterator) fetchBuffer(ctx context.Context) error {
+	ctx, span := tracer.Start(ctx, "sqlcommon.fetchBuffer", trace.WithAttributes())
+	defer span.End()
+	rows, err := t.sb.QueryContext(ctx)
+	if err != nil {
+		return t.handleSQLError(err)
+	}
+	t.rows = rows
+	return nil
+}
+
+func (t *SQLTupleIterator) next(ctx context.Context) (*storage.TupleRecord, error) {
 	t.mu.Lock()
+
+	if t.rows == nil {
+		if err := t.fetchBuffer(ctx); err != nil {
+			t.mu.Unlock()
+			return nil, err
+		}
+	}
 
 	if t.firstRow != nil {
 		// If head was called previously, we don't need to scan / next
@@ -229,9 +279,10 @@ func (t *SQLTupleIterator) next() (*storage.TupleRecord, error) {
 	}
 
 	if !t.rows.Next() {
+		err := t.rows.Err()
 		t.mu.Unlock()
-		if err := t.rows.Err(); err != nil {
-			return nil, err
+		if err != nil {
+			return nil, t.handleSQLError(err)
 		}
 		return nil, storage.ErrIteratorDone
 	}
@@ -253,7 +304,7 @@ func (t *SQLTupleIterator) next() (*storage.TupleRecord, error) {
 	t.mu.Unlock()
 
 	if err != nil {
-		return nil, err
+		return nil, t.handleSQLError(err)
 	}
 
 	record.ConditionName = conditionName.String
@@ -269,9 +320,15 @@ func (t *SQLTupleIterator) next() (*storage.TupleRecord, error) {
 	return &record, nil
 }
 
-func (t *SQLTupleIterator) head() (*storage.TupleRecord, error) {
+func (t *SQLTupleIterator) head(ctx context.Context) (*storage.TupleRecord, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	if t.rows == nil {
+		if err := t.fetchBuffer(ctx); err != nil {
+			return nil, err
+		}
+	}
 
 	if t.firstRow != nil {
 		// If head was called previously, we don't need to scan / next
@@ -289,7 +346,7 @@ func (t *SQLTupleIterator) head() (*storage.TupleRecord, error) {
 
 	if !t.rows.Next() {
 		if err := t.rows.Err(); err != nil {
-			return nil, err
+			return nil, t.handleSQLError(err)
 		}
 		return nil, storage.ErrIteratorDone
 	}
@@ -309,7 +366,7 @@ func (t *SQLTupleIterator) head() (*storage.TupleRecord, error) {
 		&record.InsertedAt,
 	)
 	if err != nil {
-		return nil, err
+		return nil, t.handleSQLError(err)
 	}
 
 	record.ConditionName = conditionName.String
@@ -328,12 +385,12 @@ func (t *SQLTupleIterator) head() (*storage.TupleRecord, error) {
 
 // ToArray converts the tupleIterator to an []*openfgav1.Tuple and a possibly empty continuation token.
 // If the continuation token exists it is the ulid of the last element of the returned array.
-func (t *SQLTupleIterator) ToArray(
+func (t *SQLTupleIterator) ToArray(ctx context.Context,
 	opts storage.PaginationOptions,
 ) ([]*openfgav1.Tuple, string, error) {
 	var res []*openfgav1.Tuple
 	for i := 0; i < opts.PageSize; i++ {
-		tupleRecord, err := t.next()
+		tupleRecord, err := t.next(ctx)
 		if err != nil {
 			if errors.Is(err, storage.ErrIteratorDone) {
 				return res, "", nil
@@ -346,7 +403,7 @@ func (t *SQLTupleIterator) ToArray(
 	// Check if we are at the end of the iterator.
 	// If we are then we do not need to return a continuation token.
 	// This is why we have LIMIT+1 in the query.
-	tupleRecord, err := t.next()
+	tupleRecord, err := t.next(ctx)
 	if err != nil {
 		if errors.Is(err, storage.ErrIteratorDone) {
 			return res, "", nil
@@ -363,7 +420,7 @@ func (t *SQLTupleIterator) Next(ctx context.Context) (*openfgav1.Tuple, error) {
 		return nil, ctx.Err()
 	}
 
-	record, err := t.next()
+	record, err := t.next(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -377,7 +434,7 @@ func (t *SQLTupleIterator) Head(ctx context.Context) (*openfgav1.Tuple, error) {
 		return nil, ctx.Err()
 	}
 
-	record, err := t.head()
+	record, err := t.head(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -387,7 +444,11 @@ func (t *SQLTupleIterator) Head(ctx context.Context) (*openfgav1.Tuple, error) {
 
 // Stop terminates iteration.
 func (t *SQLTupleIterator) Stop() {
-	t.rows.Close()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.rows != nil {
+		_ = t.rows.Close()
+	}
 }
 
 // DBInfo encapsulates DB information for use in common method.
@@ -692,17 +753,25 @@ func ReadAuthorizationModel(
 	return ret, nil
 }
 
-// IsReady returns true if the connection to the datastore is successful
-// and the datastore has the latest migration applied.
-func IsReady(ctx context.Context, db *sql.DB) (storage.ReadinessStatus, error) {
+// IsReady returns true if connection to datastore is successful AND
+// (the datastore has the latest migration applied OR skipVersionCheck).
+func IsReady(ctx context.Context, skipVersionCheck bool, db *sql.DB) (storage.ReadinessStatus, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
-	if err := db.PingContext(ctx); err != nil {
-		return storage.ReadinessStatus{}, err
+	// do ping first to ensure we have better error message
+	// if error is due to connection issue.
+	if pingErr := db.PingContext(ctx); pingErr != nil {
+		return storage.ReadinessStatus{}, pingErr
 	}
 
-	revision, err := goose.GetDBVersion(db)
+	if skipVersionCheck {
+		return storage.ReadinessStatus{
+			IsReady: true,
+		}, nil
+	}
+
+	revision, err := goose.GetDBVersionContext(ctx, db)
 	if err != nil {
 		return storage.ReadinessStatus{}, err
 	}
