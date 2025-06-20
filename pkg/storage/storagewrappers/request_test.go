@@ -10,8 +10,10 @@ import (
 
 	"github.com/openfga/openfga/internal/mocks"
 	"github.com/openfga/openfga/internal/shared"
+	"github.com/openfga/openfga/internal/utils/apimethod"
 	"github.com/openfga/openfga/pkg/logger"
 	"github.com/openfga/openfga/pkg/server/config"
+	"github.com/openfga/openfga/pkg/storage/storagewrappers/sharediterator"
 	"github.com/openfga/openfga/pkg/tuple"
 )
 
@@ -28,7 +30,7 @@ func TestRequestStorageWrapper(t *testing.T) {
 			tuple.NewTupleKey("doc:1", "viewer", "user:maria"),
 		}
 
-		br := NewRequestStorageWrapperWithCache(mockDatastore, requestContextualTuples, maxConcurrentReads,
+		br := NewRequestStorageWrapperWithCache(mockDatastore, requestContextualTuples, &Operation{Concurrency: maxConcurrentReads, Method: apimethod.Check},
 			&shared.SharedDatastoreResources{
 				CheckCache: mockCache,
 				Logger:     logger.NewNoopLogger(),
@@ -36,8 +38,6 @@ func TestRequestStorageWrapper(t *testing.T) {
 				CheckIteratorCacheEnabled: true,
 				CheckCacheLimit:           1,
 			},
-			logger.NewNoopLogger(),
-			Check,
 		)
 		require.NotNil(t, br)
 
@@ -45,18 +45,55 @@ func TestRequestStorageWrapper(t *testing.T) {
 		a, ok := br.RelationshipTupleReader.(*CombinedTupleReader)
 		require.True(t, ok)
 
-		b, ok := a.RelationshipTupleReader.(*InstrumentedOpenFGAStorage)
-		require.True(t, ok)
-
-		c, ok := b.RelationshipTupleReader.(*CachedDatastore)
+		c, ok := a.RelationshipTupleReader.(*CachedDatastore)
 		// require.Equal(t, mockCache, c.cache)
 		// require.Equal(t, sf, c.sf)
 		// require.Equal(t, 1000, c.maxResultSize)
 		// require.Equal(t, 10*time.Second, c.ttl)
 		require.True(t, ok)
 
-		d, ok := c.RelationshipTupleReader.(*BoundedConcurrencyTupleReader)
+		d, ok := c.RelationshipTupleReader.(*BoundedTupleReader)
 		require.Equal(t, maxConcurrentReads, cap(d.limiter))
+		require.True(t, ok)
+	})
+
+	t.Run("check_api_with_caching_shared_iterator_on", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+		mockDatastore := mocks.NewMockRelationshipTupleReader(ctrl)
+		mockCache := mocks.NewMockInMemoryCache[any](ctrl)
+
+		requestContextualTuples := []*openfgav1.TupleKey{
+			tuple.NewTupleKey("doc:1", "viewer", "user:maria"),
+		}
+
+		sharedIteratorStorage := sharediterator.NewSharedIteratorDatastoreStorage()
+
+		br := NewRequestStorageWrapperWithCache(mockDatastore, requestContextualTuples, &Operation{Concurrency: maxConcurrentReads, Method: apimethod.Check},
+			&shared.SharedDatastoreResources{
+				CheckCache:            mockCache,
+				Logger:                logger.NewNoopLogger(),
+				SharedIteratorStorage: sharedIteratorStorage,
+			}, config.CacheSettings{
+				CheckIteratorCacheEnabled: true,
+				CheckCacheLimit:           1,
+				SharedIteratorEnabled:     true,
+			},
+		)
+		require.NotNil(t, br)
+
+		// assert on the chain
+		a, ok := br.RelationshipTupleReader.(*CombinedTupleReader)
+		require.True(t, ok)
+
+		c, ok := a.RelationshipTupleReader.(*sharediterator.IteratorDatastore)
+		require.True(t, ok)
+
+		d, ok := c.RelationshipTupleReader.(*CachedDatastore)
+		require.True(t, ok)
+
+		e, ok := d.RelationshipTupleReader.(*BoundedTupleReader)
+		require.Equal(t, maxConcurrentReads, cap(e.limiter))
 		require.True(t, ok)
 	})
 
@@ -72,11 +109,12 @@ func TestRequestStorageWrapper(t *testing.T) {
 		br := NewRequestStorageWrapperWithCache(
 			mockDatastore,
 			requestContextualTuples,
-			maxConcurrentReads,
+			&Operation{
+				Method:      apimethod.Check,
+				Concurrency: maxConcurrentReads,
+			},
 			&shared.SharedDatastoreResources{Logger: logger.NewNoopLogger()},
 			config.CacheSettings{},
-			logger.NewNoopLogger(),
-			Check,
 		)
 		require.NotNil(t, br)
 
@@ -84,10 +122,7 @@ func TestRequestStorageWrapper(t *testing.T) {
 		a, ok := br.RelationshipTupleReader.(*CombinedTupleReader)
 		require.True(t, ok)
 
-		b, ok := a.RelationshipTupleReader.(*InstrumentedOpenFGAStorage)
-		require.True(t, ok)
-
-		c, ok := b.RelationshipTupleReader.(*BoundedConcurrencyTupleReader)
+		c, ok := a.RelationshipTupleReader.(*BoundedTupleReader)
 		require.Equal(t, maxConcurrentReads, cap(c.limiter))
 		require.True(t, ok)
 	})
@@ -101,17 +136,14 @@ func TestRequestStorageWrapper(t *testing.T) {
 			tuple.NewTupleKey("doc:1", "viewer", "user:maria"),
 		}
 
-		br := NewRequestStorageWrapper(mockDatastore, requestContextualTuples, maxConcurrentReads)
+		br := NewRequestStorageWrapper(mockDatastore, requestContextualTuples, &Operation{Concurrency: maxConcurrentReads})
 		require.NotNil(t, br)
 
 		// assert on the chain
 		a, ok := br.RelationshipTupleReader.(*CombinedTupleReader)
 		require.True(t, ok)
 
-		b, ok := a.RelationshipTupleReader.(*InstrumentedOpenFGAStorage)
-		require.True(t, ok)
-
-		c, ok := b.RelationshipTupleReader.(*BoundedConcurrencyTupleReader)
+		c, ok := a.RelationshipTupleReader.(*BoundedTupleReader)
 		require.Equal(t, maxConcurrentReads, cap(c.limiter))
 		require.True(t, ok)
 	})
