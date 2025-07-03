@@ -10,7 +10,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	openfgav1 "github.com/openfga/api/proto/openfga/v1"
@@ -24,6 +23,7 @@ import (
 	"github.com/openfga/openfga/internal/shared"
 	"github.com/openfga/openfga/internal/throttler"
 	"github.com/openfga/openfga/internal/throttler/threshold"
+	"github.com/openfga/openfga/internal/utils/apimethod"
 	"github.com/openfga/openfga/internal/validation"
 	"github.com/openfga/openfga/pkg/logger"
 	"github.com/openfga/openfga/pkg/server/commands/reverseexpand"
@@ -62,9 +62,25 @@ type ListObjectsQuery struct {
 
 	dispatchThrottlerConfig threshold.Config
 
+	datastoreThrottleThreshold int
+	datastoreThrottleDuration  time.Duration
+
 	checkResolver            graph.CheckResolver
 	cacheSettings            serverconfig.CacheSettings
 	sharedDatastoreResources *shared.SharedDatastoreResources
+
+	optimizationsEnabled bool // Indicates if experimental optimizations are enabled for ListObjectsResolver
+}
+
+type ListObjectsResolver interface {
+	// Execute the ListObjectsQuery, returning a list of object IDs up to a maximum of q.listObjectsMaxResults
+	// or until q.listObjectsDeadline is hit, whichever happens first.
+	Execute(ctx context.Context, req *openfgav1.ListObjectsRequest) (*ListObjectsResponse, error)
+
+	// ExecuteStreamed executes the ListObjectsQuery, returning a stream of object IDs.
+	// It ignores the value of q.listObjectsMaxResults and returns all available results
+	// until q.listObjectsDeadline is hit.
+	ExecuteStreamed(ctx context.Context, req *openfgav1.StreamedListObjectsRequest, srv openfgav1.OpenFGAService_StreamedListObjectsServer) (*ListObjectsResolutionMetadata, error)
 }
 
 type ListObjectsResolutionMetadata struct {
@@ -78,8 +94,8 @@ type ListObjectsResolutionMetadata struct {
 	WasThrottled *atomic.Bool
 }
 
-func NewListObjectsResolutionMetadata() *ListObjectsResolutionMetadata {
-	return &ListObjectsResolutionMetadata{
+func NewListObjectsResolutionMetadata() ListObjectsResolutionMetadata {
+	return ListObjectsResolutionMetadata{
 		DatastoreQueryCount: new(atomic.Uint32),
 		DispatchCounter:     new(atomic.Uint32),
 		WasThrottled:        new(atomic.Bool),
@@ -145,6 +161,19 @@ func WithListObjectsCache(sharedDatastoreResources *shared.SharedDatastoreResour
 	}
 }
 
+func WithListObjectsDatastoreThrottler(threshold int, duration time.Duration) ListObjectsQueryOption {
+	return func(d *ListObjectsQuery) {
+		d.datastoreThrottleThreshold = threshold
+		d.datastoreThrottleDuration = duration
+	}
+}
+
+func WithListObjectsOptimizationsEnabled(enabled bool) ListObjectsQueryOption {
+	return func(d *ListObjectsQuery) {
+		d.optimizationsEnabled = enabled
+	}
+}
+
 func NewListObjectsQuery(
 	ds storage.RelationshipTupleReader,
 	checkResolver graph.CheckResolver,
@@ -177,6 +206,7 @@ func NewListObjectsQuery(
 		sharedDatastoreResources: &shared.SharedDatastoreResources{
 			CacheController: cachecontroller.NewNoopCacheController(),
 		},
+		optimizationsEnabled: serverconfig.DefaultListObjectsOptimizationsEnabled,
 	}
 
 	for _, opt := range opts {
@@ -286,11 +316,14 @@ func (q *ListObjectsQuery) evaluate(
 		ds := storagewrappers.NewRequestStorageWrapperWithCache(
 			q.datastore,
 			req.GetContextualTuples().GetTupleKeys(),
-			q.maxConcurrentReads,
+			&storagewrappers.Operation{
+				Method:            apimethod.ListObjects,
+				Concurrency:       q.maxConcurrentReads,
+				ThrottleThreshold: q.datastoreThrottleThreshold,
+				ThrottleDuration:  q.datastoreThrottleDuration,
+			},
 			q.sharedDatastoreResources,
 			q.cacheSettings,
-			q.logger,
-			storagewrappers.ListObjects,
 		)
 
 		reverseExpandQuery := reverseexpand.NewReverseExpandQuery(
@@ -300,6 +333,8 @@ func (q *ListObjectsQuery) evaluate(
 			reverseexpand.WithDispatchThrottlerConfig(q.dispatchThrottlerConfig),
 			reverseexpand.WithResolveNodeBreadthLimit(q.resolveNodeBreadthLimit),
 			reverseexpand.WithLogger(q.logger),
+			reverseexpand.WithCheckResolver(q.checkResolver),
+			reverseexpand.WithListObjectOptimizationsEnabled(q.optimizationsEnabled),
 		)
 
 		reverseExpandDoneWithError := make(chan struct{}, 1)
@@ -365,6 +400,7 @@ func (q *ListObjectsQuery) evaluate(
 					resp, checkRequestMetadata, err := NewCheckCommand(q.datastore, q.checkResolver, typesys,
 						WithCheckCommandLogger(q.logger),
 						WithCheckCommandMaxConcurrentReads(q.maxConcurrentReads),
+						WithCheckDatastoreThrottler(q.datastoreThrottleThreshold, q.datastoreThrottleDuration),
 					).
 						Execute(ctx, &CheckCommandParams{
 							StoreID:          req.GetStoreId(),
@@ -397,7 +433,9 @@ func (q *ListObjectsQuery) evaluate(
 			// TODO set header to indicate "deadline exceeded"
 		}
 		close(resultsChan)
-		resolutionMetadata.DatastoreQueryCount.Add(ds.GetMetrics().DatastoreQueryCount)
+		dsMeta := ds.GetMetadata()
+		resolutionMetadata.DatastoreQueryCount.Add(dsMeta.DatastoreQueryCount)
+		resolutionMetadata.WasThrottled.CompareAndSwap(false, dsMeta.WasThrottled)
 	}
 
 	go handler()
@@ -436,12 +474,10 @@ func (q *ListObjectsQuery) Execute(
 	resolutionMetadata := NewListObjectsResolutionMetadata()
 
 	if req.GetConsistency() != openfgav1.ConsistencyPreference_HIGHER_CONSISTENCY && q.cacheSettings.ShouldCacheListObjectsIterators() {
-		span := trace.SpanFromContext(ctx)
-
 		// Kick off background job to check if cache records are stale, inavlidating where needed
-		q.sharedDatastoreResources.CacheController.InvalidateIfNeeded(req.GetStoreId(), span)
+		q.sharedDatastoreResources.CacheController.InvalidateIfNeeded(ctx, req.GetStoreId())
 	}
-	err := q.evaluate(timeoutCtx, req, resultsChan, maxResults, resolutionMetadata)
+	err := q.evaluate(timeoutCtx, req, resultsChan, maxResults, &resolutionMetadata)
 	if err != nil {
 		return nil, err
 	}
@@ -473,7 +509,7 @@ func (q *ListObjectsQuery) Execute(
 
 	return &ListObjectsResponse{
 		Objects:            objects,
-		ResolutionMetadata: *resolutionMetadata,
+		ResolutionMetadata: resolutionMetadata,
 	}, nil
 }
 
@@ -494,7 +530,7 @@ func (q *ListObjectsQuery) ExecuteStreamed(ctx context.Context, req *openfgav1.S
 
 	resolutionMetadata := NewListObjectsResolutionMetadata()
 
-	err := q.evaluate(timeoutCtx, req, resultsChan, maxResults, resolutionMetadata)
+	err := q.evaluate(timeoutCtx, req, resultsChan, maxResults, &resolutionMetadata)
 	if err != nil {
 		return nil, err
 	}
@@ -519,5 +555,5 @@ func (q *ListObjectsQuery) ExecuteStreamed(ctx context.Context, req *openfgav1.S
 		}
 	}
 
-	return resolutionMetadata, nil
+	return &resolutionMetadata, nil
 }

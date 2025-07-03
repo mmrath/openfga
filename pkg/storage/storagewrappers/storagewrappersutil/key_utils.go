@@ -1,4 +1,4 @@
-package storagewrappers
+package storagewrappersutil
 
 import (
 	"strconv"
@@ -12,7 +12,14 @@ import (
 	"github.com/openfga/openfga/pkg/tuple"
 )
 
-func readStartingWithUserKey(
+const (
+	OperationRead                 = "Read"
+	OperationReadStartingWithUser = "ReadStartingWithUser"
+	OperationReadUsersetTuples    = "ReadUsersetTuples"
+	OperationReadUserTuple        = "ReadUserTuple"
+)
+
+func ReadStartingWithUserKey(
 	store string,
 	filter storage.ReadStartingWithUserFilter,
 ) (string, error) {
@@ -44,7 +51,7 @@ func readStartingWithUserKey(
 	return b.String(), nil
 }
 
-func readUsersetTuplesKey(store string, filter storage.ReadUsersetTuplesFilter) string {
+func ReadUsersetTuplesKey(store string, filter storage.ReadUsersetTuplesFilter) string {
 	var b strings.Builder
 	b.WriteString(
 		storage.GetReadUsersetTuplesCacheKeyPrefix(store, filter.Object, filter.Relation),
@@ -73,7 +80,7 @@ func readUsersetTuplesKey(store string, filter storage.ReadUsersetTuplesFilter) 
 	return b.String()
 }
 
-func readKey(store string, tupleKey *openfgav1.TupleKey) string {
+func ReadKey(store string, tupleKey *openfgav1.TupleKey) string {
 	var b strings.Builder
 	b.WriteString(
 		storage.GetReadCacheKey(store, tuple.TupleKeyToString(tupleKey)),

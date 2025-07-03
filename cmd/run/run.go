@@ -148,9 +148,15 @@ func NewRunCommand() *cobra.Command {
 
 	flags.String("datastore-uri", defaultConfig.Datastore.URI, "the connection uri to use to connect to the datastore (for any engine other than 'memory')")
 
+	flags.String("datastore-secondary-uri", defaultConfig.Datastore.SecondaryURI, "the connection uri to use to connect to the secondary datastore (for postgres only)")
+
 	flags.String("datastore-username", "", "the connection username to use to connect to the datastore (overwrites any username provided in the connection uri)")
 
 	flags.String("datastore-password", "", "the connection password to use to connect to the datastore (overwrites any password provided in the connection uri)")
+
+	flags.String("datastore-secondary-username", "", "the connection username to use to connect to the secondary datastore (overwrites any username provided in the connection uri)")
+
+	flags.String("datastore-secondary-password", "", "the connection password to use to connect to the secondary datastore (overwrites any password provided in the connection uri)")
 
 	flags.Int("datastore-max-cache-size", defaultConfig.Datastore.MaxCacheSize, "the maximum number of authorization models that will be cached in memory")
 
@@ -228,6 +234,10 @@ func NewRunCommand() *cobra.Command {
 
 	flags.Uint32("check-cache-limit", defaultConfig.CheckCache.Limit, "if check-query-cache-enabled or check-iterator-cache-enabled, this is the size limit of the cache")
 
+	flags.Bool("shared-iterator-enabled", defaultConfig.SharedIterator.Enabled, "enabling sharing of datastore iterators with different consumers. Each iterator is the result of a database query, for example usersets related to a specific object, or objects related to a specific user, up to a certain number of tuples per iterator.")
+
+	flags.Uint32("shared-iterator-limit", defaultConfig.SharedIterator.Limit, "if shared-iterator-enabled is enabled, this is the limit of the number of iterators that can be shared.")
+
 	flags.Bool("check-iterator-cache-enabled", defaultConfig.CheckIteratorCache.Enabled, "enable caching of datastore iterators. The key is a string representing a database query, and the value is a list of tuples. Each iterator is the result of a database query, for example usersets related to a specific object, or objects related to a specific user, up to a certain number of tuples per iterator. If the request's consistency is HIGHER_CONSISTENCY, this cache is not used.")
 
 	flags.Uint32("check-iterator-cache-max-results", defaultConfig.CheckIteratorCache.MaxResults, "if caching of datastore iterators of Check requests is enabled, this is the limit of tuples to cache per key.")
@@ -280,6 +290,24 @@ func NewRunCommand() *cobra.Command {
 	flags.Uint32("listUsers-dispatch-throttling-threshold", defaultConfig.ListUsersDispatchThrottling.Threshold, "defines the number of dispatches above which ListUsers requests will be throttled.")
 
 	flags.Uint32("listUsers-dispatch-throttling-max-threshold", defaultConfig.ListUsersDispatchThrottling.MaxThreshold, "define the maximum dispatch threshold beyond which a list users requests will be throttled. 0 will use the 'listUsers-dispatch-throttling-threshold' value as maximum")
+
+	flags.Bool("check-datastore-throttle-enabled", defaultConfig.CheckDatabaseThrottle.Enabled, "enable datastore throttle for Check requests. If the requests to the datastore exceed the threshold, all requests will pay a time penalty of the specified duration, slowing down the rate of traversal.")
+
+	flags.Int("check-datastore-throttle-threshold", defaultConfig.CheckDatabaseThrottle.Threshold, "define the number of datastore requests allowed before being throttled.")
+
+	flags.Duration("check-datastore-throttle-duration", defaultConfig.CheckDatabaseThrottle.Duration, "defines the time for which the datastore request will be suspended for being throttled.")
+
+	flags.Bool("listObjects-datastore-throttle-enabled", defaultConfig.ListObjectsDatabaseThrottle.Enabled, "enable datastore throttle for List Objects requests. If the requests to the datastore exceed the threshold, all requests will pay a time penalty of the specified duration, slowing down the rate of traversal.")
+
+	flags.Int("listObjects-datastore-throttle-threshold", defaultConfig.ListObjectsDatabaseThrottle.Threshold, "define the number of datastore requests allowed before being throttled.")
+
+	flags.Duration("listObjects-datastore-throttle-duration", defaultConfig.ListObjectsDatabaseThrottle.Duration, "defines the time for which the datastore request will be suspended for being throttled.")
+
+	flags.Bool("listUsers-datastore-throttle-enabled", defaultConfig.ListUsersDatabaseThrottle.Enabled, "enable datastore throttle for List Users requests. If the requests to the datastore exceed the threshold, all requests will pay a time penalty of the specified duration, slowing down the rate of traversal.")
+
+	flags.Int("listUsers-datastore-throttle-threshold", defaultConfig.ListUsersDatabaseThrottle.Threshold, "define the number of datastore requests allowed before being throttled.")
+
+	flags.Duration("listUsers-datastore-throttle-duration", defaultConfig.ListUsersDatabaseThrottle.Duration, "defines the time for which the datastore request will be suspended for being throttled.")
 
 	flags.Duration("request-timeout", defaultConfig.RequestTimeout, "configures request timeout.  If both HTTP upstream timeout and request timeout are specified, request timeout will be used.")
 
@@ -383,8 +411,11 @@ func (s *ServerContext) datastoreConfig(config *serverconfig.Config) (storage.Op
 	// SQL Token Serializer by default
 	tokenSerializer := sqlcommon.NewSQLContinuationTokenSerializer()
 	datastoreOptions := []sqlcommon.DatastoreOption{
+		sqlcommon.WithSecondaryURI(config.Datastore.SecondaryURI),
 		sqlcommon.WithUsername(config.Datastore.Username),
 		sqlcommon.WithPassword(config.Datastore.Password),
+		sqlcommon.WithSecondaryUsername(config.Datastore.SecondaryUsername),
+		sqlcommon.WithSecondaryPassword(config.Datastore.SecondaryPassword),
 		sqlcommon.WithLogger(s.Logger),
 		sqlcommon.WithMaxTuplesPerWrite(config.MaxTuplesPerWrite),
 		sqlcommon.WithMaxTypesPerAuthorizationModel(config.MaxTypesPerAuthorizationModel),
@@ -623,8 +654,6 @@ func (s *ServerContext) Run(ctx context.Context, config *serverconfig.Config) er
 		}()
 	}
 
-	checkDispatchThrottlingConfig := serverconfig.GetCheckDispatchThrottlingConfig(s.Logger, config)
-
 	svr := server.MustNewServerWithOpts(
 		server.WithDatastore(datastore),
 		server.WithContinuationTokenSerializer(continuationTokenSerializer),
@@ -653,23 +682,31 @@ func (s *ServerContext) Run(ctx context.Context, config *serverconfig.Config) er
 		server.WithRequestDurationByDispatchCountHistogramBuckets(convertStringArrayToUintArray(config.RequestDurationDispatchCountBuckets)),
 		server.WithMaxAuthorizationModelSizeInBytes(config.MaxAuthorizationModelSizeInBytes),
 		server.WithContextPropagationToDatastore(config.ContextPropagationToDatastore),
-		server.WithDispatchThrottlingCheckResolverEnabled(checkDispatchThrottlingConfig.Enabled),
-		server.WithDispatchThrottlingCheckResolverFrequency(checkDispatchThrottlingConfig.Frequency),
-		server.WithDispatchThrottlingCheckResolverThreshold(checkDispatchThrottlingConfig.Threshold),
-		server.WithDispatchThrottlingCheckResolverMaxThreshold(checkDispatchThrottlingConfig.MaxThreshold),
+		server.WithDispatchThrottlingCheckResolverEnabled(config.CheckDispatchThrottling.Enabled),
+		server.WithDispatchThrottlingCheckResolverFrequency(config.CheckDispatchThrottling.Frequency),
+		server.WithDispatchThrottlingCheckResolverThreshold(config.CheckDispatchThrottling.Threshold),
+		server.WithDispatchThrottlingCheckResolverMaxThreshold(config.CheckDispatchThrottling.MaxThreshold),
 		server.WithListObjectsDispatchThrottlingEnabled(config.ListObjectsDispatchThrottling.Enabled),
 		server.WithListObjectsDispatchThrottlingFrequency(config.ListObjectsDispatchThrottling.Frequency),
 		server.WithListObjectsDispatchThrottlingThreshold(config.ListObjectsDispatchThrottling.Threshold),
 		server.WithListObjectsDispatchThrottlingMaxThreshold(config.ListObjectsDispatchThrottling.MaxThreshold),
-		server.WithListObjectsIteratorCacheEnabled(config.ListObjectsIteratorCache.Enabled),
-		server.WithListObjectsIteratorCacheMaxResults(config.ListObjectsIteratorCache.MaxResults),
-		server.WithListObjectsIteratorCacheTTL(config.ListObjectsIteratorCache.TTL),
 		server.WithListUsersDispatchThrottlingEnabled(config.ListUsersDispatchThrottling.Enabled),
 		server.WithListUsersDispatchThrottlingFrequency(config.ListUsersDispatchThrottling.Frequency),
 		server.WithListUsersDispatchThrottlingThreshold(config.ListUsersDispatchThrottling.Threshold),
 		server.WithListUsersDispatchThrottlingMaxThreshold(config.ListUsersDispatchThrottling.MaxThreshold),
+		server.WithCheckDatabaseThrottle(config.CheckDatabaseThrottle.Threshold, config.CheckDatabaseThrottle.Duration),
+		server.WithListObjectsDatabaseThrottle(config.ListObjectsDatabaseThrottle.Threshold, config.ListObjectsDatabaseThrottle.Duration),
+		server.WithListUsersDatabaseThrottle(config.ListUsersDatabaseThrottle.Threshold, config.ListUsersDatabaseThrottle.Duration),
+		server.WithListObjectsIteratorCacheEnabled(config.ListObjectsIteratorCache.Enabled),
+		server.WithListObjectsIteratorCacheMaxResults(config.ListObjectsIteratorCache.MaxResults),
+		server.WithListObjectsIteratorCacheTTL(config.ListObjectsIteratorCache.TTL),
 		server.WithMaxChecksPerBatchCheck(config.MaxChecksPerBatchCheck),
 		server.WithMaxConcurrentChecksPerBatchCheck(config.MaxConcurrentChecksPerBatchCheck),
+		server.WithSharedIteratorEnabled(config.SharedIterator.Enabled),
+		server.WithSharedIteratorLimit(config.SharedIterator.Limit),
+		// The shared iterator watchdog timeout is set to config.RequestTimeout + 2 seconds
+		// to provide a small buffer for operations that might slightly exceed the request timeout.
+		server.WithSharedIteratorTTL(config.RequestTimeout+2*time.Second),
 		server.WithExperimentals(experimentals...),
 		server.WithAccessControlParams(config.AccessControl.Enabled, config.AccessControl.StoreID, config.AccessControl.ModelID, config.Authn.Method),
 		server.WithContext(ctx),

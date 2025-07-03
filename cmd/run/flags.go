@@ -92,6 +92,15 @@ func bindRunFlagsFunc(flags *pflag.FlagSet) func(*cobra.Command, []string) {
 		util.MustBindPFlag("datastore.uri", flags.Lookup("datastore-uri"))
 		util.MustBindEnv("datastore.uri", "OPENFGA_DATASTORE_URI")
 
+		util.MustBindPFlag("datastore.secondaryUri", flags.Lookup("datastore-secondary-uri"))
+		util.MustBindEnv("datastore.secondaryUri", "OPENFGA_DATASTORE_SECONDARY_URI")
+
+		util.MustBindPFlag("datastore.secondaryUsername", flags.Lookup("datastore-secondary-username"))
+		util.MustBindEnv("datastore.secondaryUsername", "OPENFGA_DATASTORE_SECONDARY_USERNAME")
+
+		util.MustBindPFlag("datastore.secondaryPassword", flags.Lookup("datastore-secondary-password"))
+		util.MustBindEnv("datastore.secondaryPassword", "OPENFGA_DATASTORE_SECONDARY_PASSWORD")
+
 		util.MustBindPFlag("datastore.username", flags.Lookup("datastore-username"))
 		util.MustBindEnv("datastore.username", "OPENFGA_DATASTORE_USERNAME")
 
@@ -246,6 +255,12 @@ func bindRunFlagsFunc(flags *pflag.FlagSet) func(*cobra.Command, []string) {
 		util.MustBindPFlag("listObjectsIteratorCache.ttl", flags.Lookup("list-objects-iterator-cache-ttl"))
 		util.MustBindEnv("listObjectsIteratorCache.ttl", "OPENFGA_LIST_OBJECTS_ITERATOR_CACHE_TTL")
 
+		util.MustBindPFlag("sharedIterator.enabled", flags.Lookup("shared-iterator-enabled"))
+		util.MustBindEnv("sharedIterator.enabled", "OPENFGA_SHARED_ITERATOR_ENABLED")
+
+		util.MustBindPFlag("sharedIterator.limit", flags.Lookup("shared-iterator-limit"))
+		util.MustBindEnv("sharedIterator.limit", "OPENFGA_SHARED_ITERATOR_LIMIT")
+
 		util.MustBindPFlag("requestDurationDatastoreQueryCountBuckets", flags.Lookup("request-duration-datastore-query-count-buckets"))
 		util.MustBindEnv("requestDurationDatastoreQueryCountBuckets", "OPENFGA_REQUEST_DURATION_DATASTORE_QUERY_COUNT_BUCKETS")
 
@@ -290,6 +305,34 @@ func bindRunFlagsFunc(flags *pflag.FlagSet) func(*cobra.Command, []string) {
 
 		util.MustBindPFlag("listUsersDispatchThrottling.maxThreshold", flags.Lookup("listUsers-dispatch-throttling-max-threshold"))
 		util.MustBindEnv("listUsersDispatchThrottling.maxThreshold", "OPENFGA_LIST_USERS_DISPATCH_THROTTLING_MAX_THRESHOLD")
+
+		// consider deprecating the dispatch throttler completely after rolling out all the datastore throttlers
+		util.MustBindPFlag("checkDatastoreThrottle.enabled", flags.Lookup("check-datastore-throttle-enabled"))
+		util.MustBindEnv("checkDatastoreThrottle.enabled", "OPENFGA_CHECK_DATASTORE_THROTTLE_ENABLED")
+
+		util.MustBindPFlag("checkDatastoreThrottle.threshold", flags.Lookup("check-datastore-throttle-threshold"))
+		util.MustBindEnv("checkDatastoreThrottle.threshold", "OPENFGA_CHECK_DATASTORE_THROTTLE_THRESHOLD")
+
+		util.MustBindPFlag("checkDatastoreThrottle.duration", flags.Lookup("check-datastore-throttle-duration"))
+		util.MustBindEnv("checkDatastoreThrottle.duration", "OPENFGA_CHECK_DATASTORE_THROTTLE_DURATION")
+
+		util.MustBindPFlag("listObjectsDatastoreThrottle.enabled", flags.Lookup("listObjects-datastore-throttle-enabled"))
+		util.MustBindEnv("listObjectsDatastoreThrottle.enabled", "OPENFGA_LIST_OBJECTS_DATASTORE_THROTTLE_ENABLED")
+
+		util.MustBindPFlag("listObjectsDatastoreThrottle.threshold", flags.Lookup("listObjects-datastore-throttle-threshold"))
+		util.MustBindEnv("listObjectsDatastoreThrottle.threshold", "OPENFGA_LIST_OBJECTS_DATASTORE_THROTTLE_THRESHOLD")
+
+		util.MustBindPFlag("listObjectsDatastoreThrottle.duration", flags.Lookup("listObjects-datastore-throttle-duration"))
+		util.MustBindEnv("listObjectsDatastoreThrottle.duration", "OPENFGA_LIST_OBJECTS_DATASTORE_THROTTLE_DURATION")
+
+		util.MustBindPFlag("listUsersDatastoreThrottle.enabled", flags.Lookup("listUsers-datastore-throttle-enabled"))
+		util.MustBindEnv("listUsersDatastoreThrottle.enabled", "OPENFGA_LIST_USERS_DATASTORE_THROTTLE_ENABLED")
+
+		util.MustBindPFlag("listUsersDatastoreThrottle.threshold", flags.Lookup("listUsers-datastore-throttle-threshold"))
+		util.MustBindEnv("listUsersDatastoreThrottle.threshold", "OPENFGA_LIST_USERS_DATASTORE_THROTTLE_THRESHOLD")
+
+		util.MustBindPFlag("listUsersDatastoreThrottle.duration", flags.Lookup("listUsers-datastore-throttle-duration"))
+		util.MustBindEnv("listUsersDatastoreThrottle.duration", "OPENFGA_LIST_USERS_DATASTORE_THROTTLE_DURATION")
 
 		util.MustBindPFlag("requestTimeout", flags.Lookup("request-timeout"))
 		util.MustBindEnv("requestTimeout", "OPENFGA_REQUEST_TIMEOUT")

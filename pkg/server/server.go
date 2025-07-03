@@ -27,6 +27,7 @@ import (
 	"github.com/openfga/openfga/internal/shared"
 	"github.com/openfga/openfga/internal/throttler"
 	"github.com/openfga/openfga/internal/utils"
+	"github.com/openfga/openfga/internal/utils/apimethod"
 	"github.com/openfga/openfga/pkg/authclaims"
 	"github.com/openfga/openfga/pkg/encoder"
 	"github.com/openfga/openfga/pkg/gateway"
@@ -191,6 +192,11 @@ type Server struct {
 	shadowListObjectsCheckResolverSamplePercentage int
 	shadowListObjectsCheckResolverTimeout          time.Duration
 
+	shadowListObjectsQueryEnabled          bool
+	shadowListObjectsQuerySamplePercentage int
+	shadowListObjectsQueryTimeout          time.Duration
+	shadowListObjectsQueryMaxDeltaItems    int
+
 	requestDurationByQueryHistogramBuckets         []uint
 	requestDurationByDispatchCountHistogramBuckets []uint
 
@@ -211,6 +217,13 @@ type Server struct {
 
 	listObjectsDispatchThrottler throttler.Throttler
 	listUsersDispatchThrottler   throttler.Throttler
+
+	checkDatastoreThrottleThreshold       int
+	checkDatastoreThrottleDuration        time.Duration
+	listObjectsDatastoreThrottleThreshold int
+	listObjectsDatastoreThrottleDuration  time.Duration
+	listUsersDatastoreThrottleThreshold   int
+	listUsersDatastoreThrottleDuration    time.Duration
 
 	authorizer authz.AuthorizerInterface
 
@@ -681,6 +694,27 @@ func WithMaxChecksPerBatchCheck(maxChecks uint32) OpenFGAServiceV1Option {
 	}
 }
 
+func WithCheckDatabaseThrottle(threshold int, duration time.Duration) OpenFGAServiceV1Option {
+	return func(s *Server) {
+		s.checkDatastoreThrottleThreshold = threshold
+		s.checkDatastoreThrottleDuration = duration
+	}
+}
+
+func WithListObjectsDatabaseThrottle(threshold int, duration time.Duration) OpenFGAServiceV1Option {
+	return func(s *Server) {
+		s.listObjectsDatastoreThrottleThreshold = threshold
+		s.listObjectsDatastoreThrottleDuration = duration
+	}
+}
+
+func WithListUsersDatabaseThrottle(threshold int, duration time.Duration) OpenFGAServiceV1Option {
+	return func(s *Server) {
+		s.listUsersDatastoreThrottleThreshold = threshold
+		s.listUsersDatastoreThrottleDuration = duration
+	}
+}
+
 // WithShadowCheckResolverEnabled turns of shadow check resolver to allow result comparison.
 // Note that ShadowCheckResolver is a temporary feature and may be removed in future release.
 func WithShadowCheckResolverEnabled(enabled bool) OpenFGAServiceV1Option {
@@ -725,6 +759,53 @@ func WithShadowListObjectsCheckResolverSamplePercentage(rate int) OpenFGAService
 	}
 }
 
+// WithShadowListObjectsQueryEnabled turns on shadow list objects query to allow result comparison.
+func WithShadowListObjectsQueryEnabled(enabled bool) OpenFGAServiceV1Option {
+	return func(s *Server) {
+		s.shadowListObjectsQueryEnabled = enabled
+	}
+}
+
+// WithShadowListObjectsQueryTimeout is the amount of time to wait for the shadow ListObjects evaluation response.
+func WithShadowListObjectsQueryTimeout(threshold time.Duration) OpenFGAServiceV1Option {
+	return func(s *Server) {
+		s.shadowListObjectsQueryTimeout = threshold
+	}
+}
+
+// WithShadowListObjectsQuerySamplePercentage is the percentage of requests to sample for shadow ListObjects query.
+func WithShadowListObjectsQuerySamplePercentage(rate int) OpenFGAServiceV1Option {
+	return func(s *Server) {
+		s.shadowListObjectsQuerySamplePercentage = rate
+	}
+}
+
+func WithShadowListObjectsQueryMaxDeltaItems(maxDeltaItems int) OpenFGAServiceV1Option {
+	return func(s *Server) {
+		s.shadowListObjectsQueryMaxDeltaItems = maxDeltaItems
+	}
+}
+
+// WithSharedIteratorEnabled enables iterator to be shared across different consumer.
+func WithSharedIteratorEnabled(enabled bool) OpenFGAServiceV1Option {
+	return func(s *Server) {
+		s.cacheSettings.SharedIteratorEnabled = enabled
+	}
+}
+
+// WithSharedIteratorLimit sets the number of items that can be shared.
+func WithSharedIteratorLimit(limit uint32) OpenFGAServiceV1Option {
+	return func(s *Server) {
+		s.cacheSettings.SharedIteratorLimit = limit
+	}
+}
+
+func WithSharedIteratorTTL(ttl time.Duration) OpenFGAServiceV1Option {
+	return func(s *Server) {
+		s.cacheSettings.SharedIteratorTTL = ttl
+	}
+}
+
 // NewServerWithOpts returns a new server.
 // You must call Close on it after you are done using it.
 func NewServerWithOpts(opts ...OpenFGAServiceV1Option) (*Server, error) {
@@ -761,6 +842,11 @@ func NewServerWithOpts(opts ...OpenFGAServiceV1Option) (*Server, error) {
 		shadowListObjectsCheckResolverEnabled:          serverconfig.DefaultShadowListObjectsCheckResolverEnabled,
 		shadowListObjectsCheckResolverSamplePercentage: serverconfig.DefaultShadowListObjectsCheckSamplePercentage,
 		shadowListObjectsCheckResolverTimeout:          serverconfig.DefaultShadowListObjectsCheckResolverTimeout,
+
+		shadowListObjectsQueryEnabled:          serverconfig.DefaultShadowListObjectsQueryEnabled,
+		shadowListObjectsQuerySamplePercentage: serverconfig.DefaultShadowListObjectsQuerySamplePercentage,
+		shadowListObjectsQueryTimeout:          serverconfig.DefaultShadowListObjectsQueryTimeout,
+		shadowListObjectsQueryMaxDeltaItems:    serverconfig.DefaultShadowListObjectsQueryMaxDeltaItems,
 
 		requestDurationByQueryHistogramBuckets:         []uint{50, 200},
 		requestDurationByDispatchCountHistogramBuckets: []uint{50, 200},
@@ -819,6 +905,10 @@ func NewServerWithOpts(opts ...OpenFGAServiceV1Option) (*Server, error) {
 
 	err := s.validateAccessControlEnabled()
 	if err != nil {
+		return nil, err
+	}
+
+	if err = s.validateShadowListObjectsQueryEnabled(); err != nil {
 		return nil, err
 	}
 
@@ -1021,8 +1111,21 @@ func (s *Server) validateAccessControlEnabled() error {
 	return nil
 }
 
+// validateAccessControlEnabled validates the access control parameters.
+func (s *Server) validateShadowListObjectsQueryEnabled() error {
+	if s.shadowListObjectsQueryEnabled {
+		if s.shadowListObjectsQuerySamplePercentage < 0 || s.shadowListObjectsQuerySamplePercentage > 100 {
+			return fmt.Errorf("shadow list objects check resolver sample percentage must be between 0 and 100, got %d", s.shadowListObjectsQuerySamplePercentage)
+		}
+		if s.shadowListObjectsQueryTimeout <= 0 {
+			return fmt.Errorf("shadow list objects check resolver timeout must be greater than 0, got %s", s.shadowListObjectsQueryTimeout)
+		}
+	}
+	return nil
+}
+
 // checkAuthz checks the authorization for calling an API method.
-func (s *Server) checkAuthz(ctx context.Context, storeID, apiMethod string, modules ...string) error {
+func (s *Server) checkAuthz(ctx context.Context, storeID string, apiMethod apimethod.APIMethod, modules ...string) error {
 	if authclaims.SkipAuthzCheckFromContext(ctx) {
 		return nil
 	}
@@ -1085,7 +1188,7 @@ func (s *Server) checkWriteAuthz(ctx context.Context, req *openfgav1.WriteReques
 		return authz.ErrUnauthorizedResponse
 	}
 
-	return s.checkAuthz(ctx, req.GetStoreId(), authz.Write, modules...)
+	return s.checkAuthz(ctx, req.GetStoreId(), apimethod.Write, modules...)
 }
 
 func (s *Server) emitCheckDurationMetric(checkMetadata graph.ResolveCheckResponseMetadata, caller string) {

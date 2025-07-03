@@ -2156,7 +2156,6 @@ func TestProduceUsersets(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			expectedUsersetsChannelResult := usersetsChannelFromUsersetsChannelStruct(tt.usersetsChannelResult)
@@ -2427,7 +2426,6 @@ func TestCheckAssociatedObjects(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -2688,6 +2686,7 @@ func TestConsumeUsersets(t *testing.T) {
 			expectedResolveCheckResponse: nil,
 			errorExpected:                fmt.Errorf("mock_error"),
 		},
+		// TODO: This test is flaky needs further investigation
 		{
 			name: "iterator_error_first_batch_but_success_second",
 			tuples: []dsResults{
@@ -2764,7 +2763,6 @@ func TestConsumeUsersets(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -2977,7 +2975,6 @@ func TestProduceUsersetDispatches(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			ctrl := gomock.NewController(t)
@@ -3142,7 +3139,6 @@ func TestProduceTTUDispatches(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			ctrl := gomock.NewController(t)
@@ -3303,7 +3299,6 @@ func TestProcessDispatch(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			ctrl := gomock.NewController(t)
@@ -3518,7 +3513,6 @@ func TestConsumeDispatch(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			ctrl := gomock.NewController(t)
@@ -3639,7 +3633,6 @@ func TestCheckUsersetSlowPath(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			iter := storage.NewConditionsFilteredTupleKeyIterator(storage.NewStaticTupleKeyIterator(tt.tuples), filter)
@@ -3823,7 +3816,6 @@ func TestCheckTTUSlowPath(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			ctrl := gomock.NewController(t)
